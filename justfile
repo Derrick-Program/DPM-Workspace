@@ -120,6 +120,6 @@ env-init:
 env-list:
     infisical secrets --env={{env}} --path=/
 
-# 批次匯入既有 dotenv 檔案內容到指定 environment, 例: just env-push crates/dpm/.env dev
+# 批次匯入既有 dotenv 檔案內容到指定 environment, 例: just env-push path/to/.env dev
 env-push dotenv target_env:
     infisical secrets set --file="{{dotenv}}" --env={{target_env}}
