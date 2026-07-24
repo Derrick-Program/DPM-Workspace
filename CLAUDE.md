@@ -32,7 +32,7 @@ crates/
 - `crates/dpm/src/utils/system.rs` 的 `init()`:`repo_url`/`repo_info` 塞進 config HashMap 後沒有寫回 `config.json`(檔案永遠是 `{}`)。
 - 權限模型不一致:Linux `chown -R root:root`,macOS `chown user:admin`。
 - `PackageManager::Unknown` 與 unsupported OS 走 `panic!`,應改為錯誤回傳(`system.rs` 裡多處 `match` 分支)。
-- `geni` 內部釘的 `turso` 版號(`^0.6.1`)跟專案直接依賴的 `turso`(`0.7.1`)不一致,依賴樹裡會有兩份 turso,非阻塞但之後 `geni` 出新版對齊時可以清掉。
+- `crates/dpm/Cargo.toml` 的 `turso` 目前刻意釘在 `0.6.1`(而非最新的 `0.7.1`),因為 `geni` 內部也是釘 `turso 0.6.1`——兩邊版號要一致,否則同一個 binary 裡會連進兩份 `turso`,導致 `turso_sdk_kit` 的 C ABI symbol 重複定義(linker 直接失敗),`mimalloc` feature 的 `#[global_allocator]` 也會衝突。之後 `geni` 出新版跟進更新的 `turso` 時,這裡要同步升版,不能只改自己這邊。
 
 ## 常用指令
 
