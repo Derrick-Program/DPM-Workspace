@@ -1,4 +1,9 @@
 #![allow(warnings)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    PerUser,
+    System,
+}
 #[derive(Debug)]
 pub enum CliCommands {
     Search,
@@ -16,6 +21,7 @@ pub struct Cli {
     pub PackageName: Option<Vec<String>>,
     pub Verbose: bool,
     pub Other: Option<Option_set>,
+    pub System: bool,
 }
 
 #[derive(Debug, Default)]

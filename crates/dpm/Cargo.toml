@@ -17,6 +17,7 @@ clap.workspace = true
 clap_complete.workspace = true
 colored.workspace = true
 digest.workspace = true
+directories = "6.0.0"
 dotenv = "0.15.0"
 flate2.workspace = true
 fs2 = "0.4.3"

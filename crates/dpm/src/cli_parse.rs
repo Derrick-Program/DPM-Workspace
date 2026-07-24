@@ -148,6 +148,13 @@ fn build_cli() -> Command {
             .aliases(["gen", "generator", "autocomplete", "complete"])
             .value_parser(value_parser!(Shell)),
     )
+    .arg(
+        Arg::new("system")
+            .short('S')
+            .long("system")
+            .help("Operate on the shared system-wide install (requires root)")
+            .action(ArgAction::SetTrue),
+    )
 }
 
 fn print_completions<G: Generator>(gen: G, cmd: &mut Command) {
@@ -199,6 +206,7 @@ pub fn get_args() -> Result<Cli> {
         eprintln!("Generating completion file for {generator}...");
         print_completions(generator, &mut cmd);
     }
+    let system = matches.get_flag("system");
     let mut Commands: Option<CliCommands> = Option::<CliCommands>::None;
     let mut Verbose = false;
     let mut PN = vec![];
@@ -268,5 +276,6 @@ pub fn get_args() -> Result<Cli> {
         PackageName,
         Verbose,
         Other: Some(Other),
+        System: system,
     })
 }

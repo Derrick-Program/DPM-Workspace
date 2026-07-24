@@ -1,6 +1,6 @@
 use super::ClientError;
 use super::ClientResult;
-use crate::{ActionInfo, Setting, BIN_DIR, CONFIG, INSTALL_DIR, MAIN_DIR};
+use crate::{ActionInfo, Scope, Setting, BIN_DIR, CONFIG, INSTALL_DIR, MAIN_DIR, SCOPE};
 use dpm_core::CoreError::*;
 use dpm_core::JsonStorage;
 use libc::{getpwuid, getuid};
@@ -43,6 +43,9 @@ impl SystemController {
         }
     }
     pub fn permision_check(&self) -> ClientResult<()> {
+        if SCOPE.get() != Some(&Scope::System) {
+            return Ok(());
+        }
         // 若透過 sudo 執行,getuid() 會拿到 root;優先用 SUDO_USER 取得原始使用者
         let username = std::env::var("SUDO_USER")
             .ok()
@@ -79,8 +82,13 @@ impl SystemController {
         if !(cfg!(target_os = "linux") || cfg!(target_os = "macos")) {
             panic!("Unsupported OS");
         }
-        let mut cmd = Command::new("sudo");
-        cmd.arg(command);
+        let mut cmd = if SCOPE.get() == Some(&Scope::System) {
+            let mut c = Command::new("sudo");
+            c.arg(command);
+            c
+        } else {
+            Command::new(command)
+        };
         cmd.args(&args);
         let status = cmd
             .status()
