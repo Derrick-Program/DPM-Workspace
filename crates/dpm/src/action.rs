@@ -295,8 +295,8 @@ impl ActionInfo {
                         "no source with alias '{alias}'"
                     )));
                 }
-                JsonStorage::to_json(&setting, &config_path)?;
                 get_db().clear_table_for_source(&alias).await?;
+                JsonStorage::to_json(&setting, &config_path)?;
                 println!("{}", "Source removed.".green());
             }
             SourceAction::List => {
