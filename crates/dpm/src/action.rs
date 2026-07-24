@@ -32,10 +32,10 @@ impl ActionInfo {
             system_controller: SystemController,
         }
     }
-    fn parse_mine(&self) -> (Vec<String>, Vec<String>) {
+    async fn parse_mine(&self) -> (Vec<String>, Vec<String>) {
         let mut is: Vec<String> = Vec::new();
         let mut isnot: Vec<String> = Vec::new();
-        let all_packages = get_db().read_all().unwrap_or_else(|_| Vec::new());
+        let all_packages = get_db().read_all().await.unwrap_or_else(|_| Vec::new());
         let package_names: Vec<String> = all_packages.into_iter().map(|pkg| pkg.name).collect();
         for pkg in &self.pkgs {
             if package_names.contains(pkg) {
@@ -47,12 +47,13 @@ impl ActionInfo {
         (is, isnot)
     }
     pub async fn install(&self) -> ClientResult<()> {
-        let (is, isnot) = self.parse_mine();
+        let (is, isnot) = self.parse_mine().await;
         if !is.is_empty() {
             for pkg in is {
                 let pkg = pkg.as_str();
                 let repo_package_info = get_db()
                     .read_one(pkg)
+                    .await
                     .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?
                     .ok_or_else(|| {
                         ClientError::Core(CoreError::PackageNotFound(pkg.to_string()))
@@ -153,7 +154,7 @@ impl ActionInfo {
         remote_repo.fetch_update_repo_info(repo_info_url).await?;
         let db = get_db();
 
-        db.clear_table("LocalRepo")?;
+        db.clear_table("LocalRepo").await?;
 
         let repo_handler = remote_repo.get_package_handler();
 
@@ -166,16 +167,18 @@ impl ActionInfo {
                 });
             let package_info = remote_repo.get_single_package_info(name).await?;
             println!("{} Updating...", name.green());
-            get_db().insert(DbPackage::new(
-                name,
-                repo_info.version.as_str(),
-                repo_info.url.as_str(),
-                package_info.description.as_str(),
-                repo_info.file_name.as_str(),
-                repo_info.hash.as_str(),
-                package_info.file_name.as_str(),
-                dependencies1,
-            ))?;
+            get_db()
+                .insert(DbPackage::new(
+                    name,
+                    repo_info.version.as_str(),
+                    repo_info.url.as_str(),
+                    package_info.description.as_str(),
+                    repo_info.file_name.as_str(),
+                    repo_info.hash.as_str(),
+                    package_info.file_name.as_str(),
+                    dependencies1,
+                ))
+                .await?;
         }
         // update_package_index(self.verbose);
         println!("{} Updated!", "==>".green());
@@ -191,26 +194,28 @@ impl ActionInfo {
                         .map(|dep| Dependency::new(&dep.name, &dep.version))
                         .collect::<Vec<_>>()
                 });
-            get_db().insert(DbPackage::new(
-                name,
-                repo_info.version.as_str(),
-                repo_info.url.as_str(),
-                repo_info
-                    .description
-                    .as_ref()
-                    .unwrap_or(&String::new())
-                    .as_str(),
-                repo_info.file_name.as_str(),
-                repo_info.hash.as_str(),
-                repo_info.entry.as_ref().unwrap_or(&String::new()).as_str(),
-                dependencies1,
-            ))?;
+            get_db()
+                .insert(DbPackage::new(
+                    name,
+                    repo_info.version.as_str(),
+                    repo_info.url.as_str(),
+                    repo_info
+                        .description
+                        .as_ref()
+                        .unwrap_or(&String::new())
+                        .as_str(),
+                    repo_info.file_name.as_str(),
+                    repo_info.hash.as_str(),
+                    repo_info.entry.as_ref().unwrap_or(&String::new()).as_str(),
+                    dependencies1,
+                ))
+                .await?;
         }
         Ok(())
     }
 
-    pub fn uninstall(&self) -> ClientResult<()> {
-        let (is, isnot) = self.parse_mine();
+    pub async fn uninstall(&self) -> ClientResult<()> {
+        let (is, isnot) = self.parse_mine().await;
         if !is.is_empty() {
             for pkg in is {
                 let pre_rm_location = INSTALL_DIR.get().unwrap().join(&pkg);
@@ -238,8 +243,8 @@ impl ActionInfo {
         Ok(())
     }
 
-    pub fn search(&self) -> ClientResult<()> {
-        let (is, isnot) = self.parse_mine();
+    pub async fn search(&self) -> ClientResult<()> {
+        let (is, isnot) = self.parse_mine().await;
         if !is.is_empty() {
             println!();
             for pkg in is {
@@ -254,7 +259,7 @@ impl ActionInfo {
         Ok(())
     }
 
-    pub fn list(&self, sys: bool) -> ClientResult<()> {
+    pub async fn list(&self, sys: bool) -> ClientResult<()> {
         if sys {
             self.system_action.list_packages()?;
         } else {
@@ -267,8 +272,8 @@ impl ActionInfo {
         Ok(())
     }
 
-    pub fn upgrade(&self) -> ClientResult<()> {
-        let (is, isnot) = self.parse_mine();
+    pub async fn upgrade(&self) -> ClientResult<()> {
+        let (is, isnot) = self.parse_mine().await;
         if !is.is_empty() {
             for pkg in is {
                 println!("{:#?}", pkg);

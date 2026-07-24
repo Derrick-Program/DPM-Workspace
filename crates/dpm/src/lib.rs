@@ -21,7 +21,6 @@ static VERSION: OnceLock<String> = OnceLock::new();
 static BIN: OnceLock<String> = OnceLock::new();
 static DB_INSTANCE: OnceLock<Db> = OnceLock::new();
 
-#[tokio::main]
 pub async fn entry(config: Cli) -> ClientResult<()> {
     let setting_config: Setting = SystemController.init().await?;
     let pass_info = ActionInfo::new(
@@ -34,17 +33,17 @@ pub async fn entry(config: Cli) -> ClientResult<()> {
         CliCommands::List => {
             if let Some(options) = &config.Other {
                 if let Some(true) = options.List_sys_installed {
-                    pass_info.list(true)?;
+                    pass_info.list(true).await?;
                 }
                 if let Some(true) = options.List_installed {
-                    pass_info.list(false)?;
+                    pass_info.list(false).await?;
                 }
             }
         }
-        CliCommands::Search => pass_info.search()?,
-        CliCommands::Uninstall => pass_info.uninstall()?,
+        CliCommands::Search => pass_info.search().await?,
+        CliCommands::Uninstall => pass_info.uninstall().await?,
         CliCommands::Update => pass_info.update().await?,
-        CliCommands::Upgrade => pass_info.upgrade()?,
+        CliCommands::Upgrade => pass_info.upgrade().await?,
         CliCommands::UpgradeSelf => pass_info.upgrade_self(),
         CliCommands::None => panic!("No command found"),
     }
@@ -58,7 +57,8 @@ pub fn get_db() -> &'static Db {
         .get()
         .expect("Database instance not initialized")
 }
-pub fn set_globle_var() -> ClientResult<()> {
+
+pub async fn set_globle_var() -> ClientResult<()> {
     MAIN_DIR.set(PathBuf::from("/opt/DPM")).unwrap();
     BIN_DIR.set(PathBuf::from("/opt/DPM/bin")).unwrap();
     INSTALL_DIR.set(PathBuf::from("/opt/DPM/Software")).unwrap();
@@ -77,9 +77,10 @@ pub fn set_globle_var() -> ClientResult<()> {
         SystemController.permision_check()?;
     }
     let db_path = MAIN_DIR.get().unwrap().join("LocalRepo.db");
-    let mut db = Db::new(db_path.to_str().unwrap(), "/opt/DPM/LocalRepo.lock")
+    let db = Db::new(db_path.to_str().unwrap(), "/opt/DPM/LocalRepo.lock")
+        .await
         .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
-    db.run_migrations()?;
+    db.run_migrations().await?;
     DB_INSTANCE
         .set(db)
         .map_err(|_| "Failed to set DB_INSTANCE")
