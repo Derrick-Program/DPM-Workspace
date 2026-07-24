@@ -205,13 +205,12 @@ impl Db {
         self.execute_query(&format!("DELETE FROM {}", tname)).await
     }
 
-    pub async fn download_file(&self, name: &str) -> ClientResult<()> {
+    pub async fn download_file(&self, name: &str, dest_path: &Path) -> ClientResult<()> {
         let package = self
             .read_one(name)
             .await?
             .ok_or_else(|| ClientError::Core(PackageNotFound(name.to_string())))?;
         let url = &package.url;
-        let filename = Path::new("/tmp").join(&package.filename);
         let req = reqwest::get(url)
             .await
             .map_err(|e| ClientError::Core(NetworkError(e.to_string())))?;
@@ -221,7 +220,7 @@ impl Db {
                 req.status()
             ))));
         }
-        let mut file = tokio::fs::File::create(&filename)
+        let mut file = tokio::fs::File::create(dest_path)
             .await
             .map_err(|e| ClientError::Core(IoError(e)))?;
         let mut stream = req.bytes_stream();
@@ -232,7 +231,7 @@ impl Db {
                 .await
                 .map_err(|e| ClientError::SystemError(format!("Failed to write chunk: {}", e)))?;
         }
-        println!("File downloaded to: {}", filename.display());
+        println!("File downloaded to: {}", dest_path.display());
         Ok(())
     }
 }

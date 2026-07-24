@@ -28,11 +28,9 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sudo = "0.6.0"
+tempfile = "3.10.1"
 thiserror.workspace = true
 tokio.workspace = true
 turso = "0.6.1"
 walkdir.workspace = true
 zip.workspace = true
-
-[dev-dependencies]
-tempfile = "3.10.1"

@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     get_db, read_file_from_zip, system::*, unzip_file, ClientError, ClientResult, DbPackage,
-    Hashes, Setting, BIN_DIR, INSTALL_DIR,
+    Hashes, Setting, BIN_DIR, INSTALL_DIR, MAIN_DIR,
 };
 use colored::Colorize;
 use dpm_core::CoreError;
@@ -59,20 +59,29 @@ impl ActionInfo {
                 if self.verbose {
                     println!("{}\n\n  {}", pkg.on_green(), "Downloading...".yellow());
                 }
+
+                let staging_root_base = MAIN_DIR.get().unwrap().join(".staging");
+                std::fs::create_dir_all(&staging_root_base)
+                    .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+                let staging = tempfile::Builder::new()
+                    .prefix(pkg)
+                    .tempdir_in(&staging_root_base)
+                    .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+
+                let download_path = staging.path().join(&repo_package_info.filename);
                 get_db()
-                    .download_file(pkg)
+                    .download_file(pkg, &download_path)
                     .await
                     .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?;
                 if self.verbose {
                     println!("  {}", "Download successed!".green());
                 }
-                let ori_path = Path::new("/tmp").join(repo_package_info.filename);
                 let package_info_test: String =
-                    read_file_from_zip(&ori_path, "packageInfo.json").unwrap();
+                    read_file_from_zip(&download_path, "packageInfo.json").unwrap();
                 let package_info: PackageInfo =
                     JsonStorage::from_str_to(package_info_test.as_str()).unwrap();
                 let package_hash_info: Hashes = JsonStorage::from_str_to(
-                    read_file_from_zip(&ori_path, "hashes.json")
+                    read_file_from_zip(&download_path, "hashes.json")
                         .unwrap()
                         .as_str(),
                 )
@@ -83,7 +92,7 @@ impl ActionInfo {
                         "Checking Package Hash ...(May take a while)".yellow()
                     );
                 }
-                let hash = dpm_core::hash_file(&ori_path)?;
+                let hash = dpm_core::hash_file(&download_path)?;
                 if repo_package_info.hash != hash {
                     return Err(ClientError::Core(CoreError::HashMismatch {
                         expected: repo_package_info.hash,
@@ -102,16 +111,14 @@ impl ActionInfo {
                     println!("  {}", "Installing ...".yellow());
                 }
 
-                let install_path = INSTALL_DIR.get().unwrap().join(pkg);
-                unzip_file(&ori_path, &install_path)
+                let extracted = staging.path().join("extracted");
+                unzip_file(&download_path, &extracted)
                     .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+
+                let install_path = INSTALL_DIR.get().unwrap().join(pkg);
+                swap_into_install_dir(&extracted, &install_path, staging.path())?;
                 if self.verbose {
                     println!("  {}", "Installed!".green());
-                    println!("  {}", "Removing tmp file ...".blue());
-                }
-                remove_file(ori_path).map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
-                if self.verbose {
-                    println!("  {}", "Removed Success ...".green());
                     println!("  {}", "Create Links ...".yellow());
                 }
                 let main_file = install_path.join(&package_info.file_name);
@@ -130,6 +137,8 @@ impl ActionInfo {
                 if self.verbose {
                     println!("  {}", "Successed Create Link!".green());
                 }
+                // `staging` (tempfile::TempDir) drop 在這裡發生,連同任何被搬到
+                // staging_root/previous 的舊版本一起清掉。
             }
         }
         if !isnot.is_empty() {
@@ -287,5 +296,98 @@ impl ActionInfo {
 
     pub fn upgrade_self(&self) {
         println!("{} Upgrading self", "==>".blue());
+    }
+}
+
+/// 把 staging 目錄裡已經驗證好的內容原子性換裝進最終安裝路徑。
+/// 若 install_path 已存在(升級情境),先把舊的搬進 staging_root/previous
+/// (同檔案系統 rename,不是複製),新內容才搬進最終路徑——任何一步失敗,
+/// install_path 都維持在「舊版本完整存在」或「還沒開始換裝」其中一種完好
+/// 狀態,不會出現半殘目錄。呼叫端的 staging TempDir drop 時會把搬出來的
+/// 舊版本一併清掉。
+fn swap_into_install_dir(
+    new_dir: &Path,
+    install_path: &Path,
+    staging_root: &Path,
+) -> ClientResult<()> {
+    if install_path.exists() {
+        let backup = staging_root.join("previous");
+        std::fs::rename(install_path, &backup)
+            .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+        if let Err(e) = std::fs::rename(new_dir, install_path) {
+            // Roll back: put the old version back so install_path is never
+            // left missing/half-installed if the final rename fails.
+            let _ = std::fs::rename(&backup, install_path);
+            return Err(ClientError::Core(CoreError::IoError(e)));
+        }
+    } else {
+        std::fs::rename(new_dir, install_path)
+            .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod atomic_install_tests {
+    use super::swap_into_install_dir;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn fresh_install_moves_new_dir_into_place() {
+        let root = tempdir().unwrap();
+        let new_dir = root.path().join("new");
+        let install_path = root.path().join("install");
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::write(new_dir.join("marker.txt"), b"v2").unwrap();
+
+        swap_into_install_dir(&new_dir, &install_path, root.path()).unwrap();
+
+        assert!(install_path.join("marker.txt").exists());
+        assert_eq!(
+            fs::read_to_string(install_path.join("marker.txt")).unwrap(),
+            "v2"
+        );
+        assert!(
+            !new_dir.exists(),
+            "new_dir should have been moved, not copied"
+        );
+    }
+
+    #[test]
+    fn upgrade_replaces_old_content_with_new() {
+        let root = tempdir().unwrap();
+        let new_dir = root.path().join("new");
+        let install_path = root.path().join("install");
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::write(new_dir.join("marker.txt"), b"v2").unwrap();
+        fs::create_dir_all(&install_path).unwrap();
+        fs::write(install_path.join("marker.txt"), b"v1").unwrap();
+
+        swap_into_install_dir(&new_dir, &install_path, root.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(install_path.join("marker.txt")).unwrap(),
+            "v2",
+            "install_path must contain the new version's content after swap"
+        );
+    }
+
+    #[test]
+    fn old_install_survives_if_new_dir_is_missing() {
+        let root = tempdir().unwrap();
+        let missing_new_dir = root.path().join("does-not-exist");
+        let install_path = root.path().join("install");
+        fs::create_dir_all(&install_path).unwrap();
+        fs::write(install_path.join("marker.txt"), b"v1").unwrap();
+
+        let result = swap_into_install_dir(&missing_new_dir, &install_path, root.path());
+
+        assert!(result.is_err(), "swap must fail if new_dir doesn't exist");
+        assert_eq!(
+            fs::read_to_string(install_path.join("marker.txt")).unwrap(),
+            "v1",
+            "old install must be untouched when the swap fails before completion"
+        );
     }
 }
