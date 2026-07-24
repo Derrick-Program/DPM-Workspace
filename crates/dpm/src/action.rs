@@ -409,10 +409,37 @@ mod atomic_install_tests {
     /// the first and second renames — both operations share `root` as their
     /// parent directory, so there is no way to set this up with a static
     /// permission change alone.
+    ///
+    /// Timing note: the watcher/main-thread synchronization here is real OS
+    /// thread scheduling (spin-poll on `backup.exists()`), not a guaranteed
+    /// ordering — there is no deterministic seam in `swap_into_install_dir`
+    /// to hook into, and adding one just for this test would be more
+    /// production-code surface than this test-only race is worth. On a
+    /// busy/throttled/virtualized CI runner the watcher can lose the race
+    /// (chmod lands after both renames already completed). If that happens,
+    /// this test does **not** pass vacuously — the `!install_path.exists()`
+    /// / `backup.exists()` assertions below would fail loudly, since the
+    /// rollback would have succeeded normally. So a lost race shows up as an
+    /// intermittent, non-actionable CI failure rather than a silent false
+    /// pass. If this test is ever observed flaking in CI, quarantine it with
+    /// `#[ignore]` rather than trying to chase the scheduling further.
     #[test]
     #[cfg(unix)]
     fn rollback_failure_still_returns_err_without_panicking() {
         use std::os::unix::fs::PermissionsExt;
+
+        // chmod 0o555 below only blocks the rollback rename for a
+        // non-root user; root can write through it regardless, which would
+        // make the rollback always succeed and this test deterministically
+        // fail for a reason unrelated to the code under test. Skip
+        // gracefully when running as root (e.g. some containerized CI).
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!(
+                "skipping rollback_failure_still_returns_err_without_panicking: \
+                 running as root, chmod 0o555 does not block root's renames"
+            );
+            return;
+        }
 
         let root = tempdir().unwrap();
         let missing_new_dir = root.path().join("does-not-exist");
