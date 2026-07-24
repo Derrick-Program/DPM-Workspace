@@ -60,20 +60,6 @@ run-client *args:
 run-server *args:
     infisical run --env={{env}} --path=/ --command="cargo run -p DPM-Server -- {{args}}"
 
-# ── Diesel (client DB) ─────────────────────────────
-
-# 新增 migration, 例: just migration-new add_column
-migration-new name:
-    infisical run --env={{env}} --path=/ --command="cd crates/dpm && diesel migration generate {{name}}"
-
-# 套用 migrations (DATABASE_URL 由 Infisical 注入)
-migration-run:
-    infisical run --env={{env}} --path=/ --command="cd crates/dpm && diesel migration run"
-
-# 重跑最後一個 migration
-migration-redo:
-    infisical run --env={{env}} --path=/ --command="cd crates/dpm && diesel migration redo"
-
 # ── 文件與維護 ──────────────────────────────────────
 
 # 產生並開啟文件

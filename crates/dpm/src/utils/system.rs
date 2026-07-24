@@ -103,17 +103,17 @@ impl SystemController {
         self.system_command_runner(
             "mkdir",
             vec!["-p", INSTALL_DIR.get().unwrap().to_str().unwrap()],
-            "Can't '/opt/DPM/Software' dir",
+            "Can't create Software dir",
         )?;
         self.system_command_runner(
             "mkdir",
             vec!["-p", CONFIG.get().unwrap().to_str().unwrap()],
-            "Can't /opt/DPM/Setting dir",
+            "Can't create Settings dir",
         )?;
         self.system_command_runner(
             "mkdir",
             vec!["-p", BIN_DIR.get().unwrap().to_str().unwrap()],
-            "Can't /opt/DPM/bin dir",
+            "Can't create bin dir",
         )?;
         self.permision_check()?;
         let config_path = CONFIG.get().unwrap().join("config.json");
