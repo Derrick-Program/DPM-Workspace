@@ -6,6 +6,15 @@ use serde_json::to_writer_pretty;
 use std::{collections::HashMap, env, io::Read, path::Path};
 use tokio::io::AsyncWriteExt;
 
+/// 對檔案內容算 blake3 hash,回傳小寫十六進位字串。
+/// client(安裝驗證)、server(發布時算 hash)共用同一份實作。
+pub fn hash_file(path: &Path) -> CoreResult<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    Ok(blake3::hash(&buffer).to_hex().to_string())
+}
+
 /// 代表套件的依賴資訊
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Dependency {

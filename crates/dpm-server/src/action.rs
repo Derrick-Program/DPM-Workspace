@@ -1,22 +1,11 @@
 use crate::*;
 use anyhow::Result as AnyhowResult;
 use colored::Colorize;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env::current_dir;
 use std::fs::{read_dir, File};
-use std::io::prelude::*;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use walkdir::WalkDir;
-pub fn hasher(file_path: &Path) -> Result<String> {
-    let mut hasher = Sha256::new();
-    let mut file = File::open(file_path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    hasher.update(&buffer);
-    let result = hasher.finalize();
-    Ok(hex::encode(result))
-}
 pub fn hash(obj: &Hash) -> AnyhowResult<()> {
     let project_path = PROJECT_SRC.get().unwrap().join(&obj.packagename);
     let hashfile = &project_path.join("hashes.json");
@@ -36,7 +25,7 @@ pub fn hash(obj: &Hash) -> AnyhowResult<()> {
         let path = entry.path();
         if path.is_file() && path != hashfile {
             counter += 1;
-            let hash = hasher(path)?;
+            let hash = dpm_core::hash_file(path)?;
             let relative_path = path.strip_prefix(&project_path).unwrap_or(path);
             println!(
                 "{} {} {} {}",
@@ -52,7 +41,7 @@ pub fn hash(obj: &Hash) -> AnyhowResult<()> {
     let mut hashes: HashMap<String, String> =
         JsonStorage::from_json(hashfile).unwrap_or_else(|_| HashMap::new());
     counter += 1;
-    let hash = hasher(hashfile)?;
+    let hash = dpm_core::hash_file(hashfile)?;
     println!(
         "{} {} {} {}",
         counter,
@@ -104,7 +93,7 @@ pub fn init(obj: &Init) -> Result<()> {
     File::create(project_path.join(obj.entry.as_str()))?;
     let file_path = project_path.join("hashes.json");
     File::create(&file_path)?;
-    let hash = hasher(&file_path)?;
+    let hash = dpm_core::hash_file(&file_path)?;
     let package_info = PackageInfo::new(
         obj.name.to_string(),
         obj.entry.to_string(),
@@ -144,7 +133,7 @@ fn fix_add(obj: &Add, repo: &mut RepoInfo) -> Result<()> {
     let data: PackageBasicInfo = PackageBasicInfo {
         file_name: format!("{}.zip", pk_info.package_name),
         version: pk_info.version,
-        hash: hasher(&package)?,
+        hash: dpm_core::hash_file(&package)?,
         url: format!(
             "https://github.com/Derrick-Program/DPM-Server/raw/main/Repo/{}.zip",
             obj.project_name

@@ -164,4 +164,30 @@ mod tests {
         assert_eq!(deserialized.name, "serde");
         assert_eq!(deserialized.version, "1.0.0");
     }
+
+    #[test]
+    fn test_hash_file_is_deterministic_and_content_sensitive() {
+        let file_a = "hash_test_a.txt";
+        let file_b = "hash_test_b.txt";
+        std::fs::write(file_a, b"hello world").unwrap();
+        std::fs::write(file_b, b"different content").unwrap();
+
+        let hash_a1 = hash_file(Path::new(file_a)).unwrap();
+        let hash_a2 = hash_file(Path::new(file_a)).unwrap();
+        let hash_b = hash_file(Path::new(file_b)).unwrap();
+
+        assert_eq!(
+            hash_a1, hash_a2,
+            "hashing the same file twice must be deterministic"
+        );
+        assert_ne!(hash_a1, hash_b, "different content must hash differently");
+        assert_eq!(
+            hash_a1.len(),
+            64,
+            "blake3 hex output is 32 bytes = 64 hex chars"
+        );
+
+        std::fs::remove_file(file_a).unwrap();
+        std::fs::remove_file(file_b).unwrap();
+    }
 }

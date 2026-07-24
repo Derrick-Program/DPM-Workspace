@@ -21,6 +21,7 @@ client = []
 
 [dependencies]
 anyhow.workspace = true
+blake3 = "1.8.5"
 futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true

@@ -12,7 +12,6 @@ dependencies = [
  "clap",
  "clap_complete",
  "colored",
- "digest",
  "directories",
  "dotenv",
  "flate2",
@@ -20,12 +19,10 @@ dependencies = [
  "futures-util",
  "geni",
  "git2",
- "hex",
  "libc",
  "reqwest",
  "serde",
  "serde_json",
- "sha2",
  "sudo",
  "tempfile",
  "thiserror 2.0.19",
@@ -40,6 +37,7 @@ name = "DPM-Core"
 version = "0.1.2"
 dependencies = [
  "anyhow",
+ "blake3",
  "futures-util",
  "reqwest",
  "serde",
@@ -58,13 +56,10 @@ dependencies = [
  "clap",
  "clap_complete",
  "colored",
- "digest",
  "flate2",
- "hex",
  "hex-literal",
  "serde",
  "serde_json",
- "sha2",
  "thiserror 2.0.19",
  "walkdir",
  "zip",
@@ -237,6 +232,18 @@ checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
 dependencies = [
  "rustversion",
 ]
+
+[[package]]
+name = "arrayref"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
+
+[[package]]
+name = "arrayvec"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
 name = "assoc"
@@ -463,6 +470,20 @@ dependencies = [
  "radium",
  "tap",
  "wyz",
+]
+
+[[package]]
+name = "blake3"
+version = "1.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0aa83c34e62843d924f905e0f5c866eb1dd6545fc4d719e803d9ba6030371fce"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq 0.4.2",
+ "cpufeatures 0.3.0",
 ]
 
 [[package]]
@@ -772,6 +793,12 @@ name = "constant_time_eq"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "245097e9a4535ee1e3e3931fcfcd55a796a44c643e8596ff6566d68f09b87bbc"
+
+[[package]]
+name = "constant_time_eq"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "core-foundation"
@@ -5699,7 +5726,7 @@ dependencies = [
  "aes",
  "byteorder",
  "bzip2",
- "constant_time_eq",
+ "constant_time_eq 0.1.5",
  "crc32fast",
  "crossbeam-utils",
  "flate2",

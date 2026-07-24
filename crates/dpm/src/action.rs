@@ -1,6 +1,5 @@
 use std::{
-    fs::{self, remove_dir_all, remove_file, File, Permissions},
-    io::Read,
+    fs::{self, remove_dir_all, remove_file, Permissions},
     os::unix::fs::PermissionsExt,
     path::Path,
 };
@@ -12,7 +11,6 @@ use crate::{
 use colored::Colorize;
 use dpm_core::CoreError;
 use dpm_core::{Dependency, JsonStorage, PackageInfo, RepoInfo};
-use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 #[derive(Debug)]
 pub struct ActionInfo {
@@ -85,7 +83,7 @@ impl ActionInfo {
                         "Checking Package Hash ...(May take a while)".yellow()
                     );
                 }
-                let hash = Self::hasher(&ori_path)?;
+                let hash = dpm_core::hash_file(&ori_path)?;
                 if repo_package_info.hash != hash {
                     return Err(ClientError::Core(CoreError::HashMismatch {
                         expected: repo_package_info.hash,
@@ -289,17 +287,5 @@ impl ActionInfo {
 
     pub fn upgrade_self(&self) {
         println!("{} Upgrading self", "==>".blue());
-    }
-
-    fn hasher(file_path: &Path) -> ClientResult<String> {
-        let mut hasher = Sha256::new();
-        let mut file =
-            File::open(file_path).map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)
-            .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
-        hasher.update(&buffer);
-        let result = hasher.finalize();
-        Ok(hex::encode(result))
     }
 }
