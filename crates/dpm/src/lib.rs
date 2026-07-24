@@ -1,10 +1,23 @@
 #![allow(non_snake_case)]
 use std::collections::HashMap;
 use std::path::PathBuf;
-pub type Setting = HashMap<String, String>;
 pub type Hashes = HashMap<String, String>;
 use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Source {
+    pub alias: String,
+    pub repo_url: String,
+    pub repo_info: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct Setting {
+    #[serde(default)]
+    pub sources: Vec<Source>,
+}
 mod action;
 mod arch;
 mod cli_parse;

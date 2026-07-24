@@ -1,14 +1,10 @@
 use super::ClientError;
 use super::ClientResult;
-use crate::{ActionInfo, Scope, Setting, BIN_DIR, CONFIG, INSTALL_DIR, MAIN_DIR, SCOPE};
-use dpm_core::CoreError::*;
+use crate::{ActionInfo, Scope, Setting, Source, BIN_DIR, CONFIG, INSTALL_DIR, MAIN_DIR, SCOPE};
 use dpm_core::JsonStorage;
 use libc::{getpwuid, getuid};
 use std::{
-    collections::HashMap,
     ffi::CStr,
-    fs::File,
-    io::Write,
     process::{Command, Stdio},
 };
 #[derive(Debug)]
@@ -118,22 +114,20 @@ impl SystemController {
         self.permision_check()?;
         let config_path = CONFIG.get().unwrap().join("config.json");
         if !config_path.exists() {
-            let mut file = File::create(&config_path).map_err(|e| ClientError::Core(IoError(e)))?;
-            file.write_all(b"{}")
-                .map_err(|e| ClientError::Core(IoError(e)))?;
-            let mut config: Setting =
-                JsonStorage::from_json(&config_path).unwrap_or_else(|_| HashMap::new());
-            config.insert(
-                "repo_url".to_string(),
-                "https://github.com/Derrick-Program/DPM-Server/tree/main/Repo".to_string(),
-            );
-            config.insert(
-                "repo_info".to_string(),
-                "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/RepoInfo.json"
-                    .to_string(),
-            );
-
-            ActionInfo::init_update(config.get("repo_info").unwrap()).await?;
+            let default_setting = Setting {
+                sources: vec![Source {
+                    alias: "official".to_string(),
+                    repo_url: "https://github.com/Derrick-Program/DPM-Server/tree/main/Repo"
+                        .to_string(),
+                    repo_info:
+                        "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/RepoInfo.json"
+                            .to_string(),
+                }],
+            };
+            JsonStorage::to_json(&default_setting, &config_path)?;
+            for source in &default_setting.sources {
+                ActionInfo::init_update(source).await?;
+            }
         }
         self.permision_check()?;
         let config: Setting = JsonStorage::from_json(&config_path)?;
