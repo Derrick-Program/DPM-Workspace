@@ -19,14 +19,17 @@ mod db_tests {
         Ok(db)
     }
 
-    fn sample_pkg() -> DbPackage {
+    fn sample_pkg(source: &str, version: &str) -> DbPackage {
         DbPackage::new(
+            source,
             "test_pkg",
-            "0.1.0",
-            "http://example.com",
+            version,
+            "prebuilt",
+            Some("http://example.com".to_string()),
+            Some("1234567890abcdef".to_string()),
+            Some("test_pkg.tar.gz".to_string()),
+            None,
             "A test package",
-            "test_pkg.tar.gz",
-            "1234567890abcdef",
             "bin/test_pkg",
             None,
         )
@@ -44,50 +47,117 @@ mod db_tests {
     async fn test_insert_and_read_all() -> TestResult {
         let dir = tempdir()?;
         let db = setup_db(dir.path()).await?;
-        db.insert(sample_pkg()).await?;
+        db.insert(sample_pkg("official", "0.1.0")).await?;
 
         let all = db.read_all().await?;
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "test_pkg");
+        assert_eq!(all[0].source, "official");
         assert_eq!(all[0].version, "0.1.0");
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_read_one() -> TestResult {
+    async fn test_read_one_is_scoped_to_source_and_version() -> TestResult {
         let dir = tempdir()?;
         let db = setup_db(dir.path()).await?;
-        db.insert(sample_pkg()).await?;
+        db.insert(sample_pkg("official", "0.1.0")).await?;
 
-        let found = db.read_one("test_pkg").await?;
+        let found = db.read_one("official", "test_pkg", "0.1.0").await?;
         assert!(found.is_some());
-        assert_eq!(found.unwrap().hash, "1234567890abcdef");
+        assert_eq!(found.unwrap().hash, Some("1234567890abcdef".to_string()));
 
-        let missing = db.read_one("nonexistent").await?;
-        assert!(missing.is_none());
+        let wrong_source = db.read_one("other", "test_pkg", "0.1.0").await?;
+        assert!(wrong_source.is_none());
+
+        let wrong_version = db.read_one("official", "test_pkg", "9.9.9").await?;
+        assert!(wrong_version.is_none());
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_update_version() -> TestResult {
+    async fn test_versions_of_returns_every_version_in_that_source() -> TestResult {
         let dir = tempdir()?;
         let db = setup_db(dir.path()).await?;
-        db.insert(sample_pkg()).await?;
+        db.insert(sample_pkg("official", "0.1.0")).await?;
+        db.insert(sample_pkg("official", "0.2.0")).await?;
 
-        db.update_version("test_pkg", "0.2.0").await?;
-        let found = db.read_one("test_pkg").await?.ok_or("package not found")?;
-        assert_eq!(found.version, "0.2.0");
+        let versions = db.versions_of("official", "test_pkg").await?;
+        assert_eq!(versions.len(), 2);
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_delete() -> TestResult {
+    async fn test_sources_of_lists_distinct_sources_for_bare_name() -> TestResult {
         let dir = tempdir()?;
         let db = setup_db(dir.path()).await?;
-        db.insert(sample_pkg()).await?;
+        db.insert(sample_pkg("official", "0.1.0")).await?;
+        db.insert(sample_pkg("third-party", "0.1.0")).await?;
 
-        db.delete("test_pkg").await?;
-        assert!(db.read_one("test_pkg").await?.is_none());
+        let mut sources = db.sources_of("test_pkg").await?;
+        sources.sort();
+        assert_eq!(
+            sources,
+            vec!["official".to_string(), "third-party".to_string()]
+        );
+
+        let none = db.sources_of("nonexistent").await?;
+        assert!(none.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_latest_version_is_the_most_recently_inserted_row() -> TestResult {
+        let dir = tempdir()?;
+        let db = setup_db(dir.path()).await?;
+        db.insert(sample_pkg("official", "0.1.0")).await?;
+        db.insert(sample_pkg("official", "0.2.0")).await?;
+
+        let latest = db
+            .latest_version("official", "test_pkg")
+            .await?
+            .ok_or("expected a latest version")?;
+        assert_eq!(latest.version, "0.2.0");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_clear_table_for_source_only_wipes_that_source() -> TestResult {
+        let dir = tempdir()?;
+        let db = setup_db(dir.path()).await?;
+        db.insert(sample_pkg("official", "0.1.0")).await?;
+        db.insert(sample_pkg("third-party", "0.1.0")).await?;
+
+        db.clear_table_for_source("official").await?;
+
+        assert!(db
+            .read_one("official", "test_pkg", "0.1.0")
+            .await?
+            .is_none());
+        assert!(db
+            .read_one("third-party", "test_pkg", "0.1.0")
+            .await?
+            .is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete_is_scoped_to_source_and_version() -> TestResult {
+        let dir = tempdir()?;
+        let db = setup_db(dir.path()).await?;
+        db.insert(sample_pkg("official", "0.1.0")).await?;
+        db.insert(sample_pkg("official", "0.2.0")).await?;
+
+        db.delete("official", "test_pkg", "0.1.0").await?;
+
+        assert!(db
+            .read_one("official", "test_pkg", "0.1.0")
+            .await?
+            .is_none());
+        assert!(db
+            .read_one("official", "test_pkg", "0.2.0")
+            .await?
+            .is_some());
         Ok(())
     }
 }

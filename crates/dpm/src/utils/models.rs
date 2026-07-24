@@ -6,12 +6,16 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DbPackage {
+    pub source: String,
     pub name: String,
     pub version: String,
-    pub url: String,
+    /// "prebuilt" | "source"
+    pub kind: String,
+    pub url: Option<String>,
+    pub hash: Option<String>,
+    pub filename: Option<String>,
+    pub build_command: Option<String>,
     pub description: String,
-    pub filename: String,
-    pub hash: String,
     pub entry: String,
     pub dependencies: Option<Vec<Dependency>>,
 }
@@ -19,22 +23,28 @@ pub struct DbPackage {
 #[allow(clippy::too_many_arguments)]
 impl DbPackage {
     pub fn new(
+        source: &str,
         name: &str,
         version: &str,
-        url: &str,
+        kind: &str,
+        url: Option<String>,
+        hash: Option<String>,
+        filename: Option<String>,
+        build_command: Option<String>,
         description: &str,
-        filename: &str,
-        hash: &str,
         entry: &str,
         dependencies: Option<Vec<Dependency>>,
     ) -> Self {
         DbPackage {
+            source: source.to_owned(),
             name: name.to_owned(),
             version: version.to_owned(),
-            url: url.to_owned(),
+            kind: kind.to_owned(),
+            url,
+            hash,
+            filename,
+            build_command,
             description: description.to_owned(),
-            filename: filename.to_owned(),
-            hash: hash.to_owned(),
             entry: entry.to_owned(),
             dependencies,
         }

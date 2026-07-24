@@ -57,6 +57,16 @@ impl Db {
             include_str!("../../migrations/0001_init.down.sql"),
         )
         .map_err(|e| ClientError::Core(IoError(e)))?;
+        std::fs::write(
+            migrations_dir.join("0002_multi_source.up.sql"),
+            include_str!("../../migrations/0002_multi_source.up.sql"),
+        )
+        .map_err(|e| ClientError::Core(IoError(e)))?;
+        std::fs::write(
+            migrations_dir.join("0002_multi_source.down.sql"),
+            include_str!("../../migrations/0002_multi_source.down.sql"),
+        )
+        .map_err(|e| ClientError::Core(IoError(e)))?;
 
         geni::migrate_database(
             format!("sqlite://{}", self.db_path),
@@ -85,19 +95,25 @@ impl Db {
                     ClientError::Core(DatabaseError(format!("column {idx} is not text")))
                 })
         };
-        let dependencies_json = row
-            .get_value(7)
-            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
-            .as_text()
-            .cloned();
+        let get_opt_text = |idx: usize| -> ClientResult<Option<String>> {
+            Ok(row
+                .get_value(idx)
+                .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+                .as_text()
+                .cloned())
+        };
+        let dependencies_json = get_opt_text(10)?;
         Ok(DbPackage {
-            name: get_text(0)?,
-            version: get_text(1)?,
-            url: get_text(2)?,
-            description: get_text(3)?,
-            filename: get_text(4)?,
-            hash: get_text(5)?,
-            entry: get_text(6)?,
+            source: get_text(0)?,
+            name: get_text(1)?,
+            version: get_text(2)?,
+            kind: get_text(3)?,
+            url: get_opt_text(4)?,
+            hash: get_opt_text(5)?,
+            filename: get_opt_text(6)?,
+            build_command: get_opt_text(7)?,
+            description: get_text(8)?,
+            entry: get_text(9)?,
             dependencies: dependencies_json.and_then(|json| serde_json::from_str(&json).ok()),
         })
     }
@@ -116,21 +132,25 @@ impl Db {
             .as_ref()
             .map(|deps| serde_json::to_string(deps).unwrap_or_else(|_| "[]".to_string()));
         let conn = self.connect().await?;
+        let to_value = |opt: Option<String>| match opt {
+            Some(s) => turso::Value::Text(s),
+            None => turso::Value::Null,
+        };
         let params: Vec<turso::Value> = vec![
+            turso::Value::Text(pkg.source),
             turso::Value::Text(pkg.name),
             turso::Value::Text(pkg.version),
-            turso::Value::Text(pkg.url),
+            turso::Value::Text(pkg.kind),
+            to_value(pkg.url),
+            to_value(pkg.hash),
+            to_value(pkg.filename),
+            to_value(pkg.build_command),
             turso::Value::Text(pkg.description),
-            turso::Value::Text(pkg.filename),
-            turso::Value::Text(pkg.hash),
             turso::Value::Text(pkg.entry),
-            match dependencies_json {
-                Some(s) => turso::Value::Text(s),
-                None => turso::Value::Null,
-            },
+            to_value(dependencies_json),
         ];
         conn.execute(
-            "INSERT INTO LocalRepo (name, version, url, description, filename, hash, entry, dependencies) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO LocalRepo (source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params,
         )
         .await
@@ -142,7 +162,7 @@ impl Db {
         let conn = self.connect().await?;
         let mut rows = conn
             .query(
-                "SELECT name, version, url, description, filename, hash, entry, dependencies FROM LocalRepo",
+                "SELECT source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies FROM LocalRepo",
                 (),
             )
             .await
@@ -158,12 +178,17 @@ impl Db {
         Ok(packages)
     }
 
-    pub async fn read_one(&self, target_name: &str) -> ClientResult<Option<DbPackage>> {
+    pub async fn read_one(
+        &self,
+        source: &str,
+        name: &str,
+        version: &str,
+    ) -> ClientResult<Option<DbPackage>> {
         let conn = self.connect().await?;
         let mut rows = conn
             .query(
-                "SELECT name, version, url, description, filename, hash, entry, dependencies FROM LocalRepo WHERE name = ?1",
-                [target_name],
+                "SELECT source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies FROM LocalRepo WHERE source = ?1 AND name = ?2 AND version = ?3",
+                [source, name, version],
             )
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
@@ -177,22 +202,14 @@ impl Db {
         }
     }
 
-    pub async fn update_version(&self, target_name: &str, new_version: &str) -> ClientResult<()> {
+    pub async fn delete(&self, source: &str, name: &str, version: &str) -> ClientResult<()> {
         let conn = self.connect().await?;
         conn.execute(
-            "UPDATE LocalRepo SET version = ?1 WHERE name = ?2",
-            [new_version, target_name],
+            "DELETE FROM LocalRepo WHERE source = ?1 AND name = ?2 AND version = ?3",
+            [source, name, version],
         )
         .await
         .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
-        Ok(())
-    }
-
-    pub async fn delete(&self, target_name: &str) -> ClientResult<()> {
-        let conn = self.connect().await?;
-        conn.execute("DELETE FROM LocalRepo WHERE name = ?1", [target_name])
-            .await
-            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
         Ok(())
     }
 
@@ -205,13 +222,104 @@ impl Db {
         self.execute_query(&format!("DELETE FROM {}", tname)).await
     }
 
-    pub async fn download_file(&self, name: &str, dest_path: &Path) -> ClientResult<()> {
+    pub async fn clear_table_for_source(&self, source: &str) -> ClientResult<()> {
+        let conn = self.connect().await?;
+        conn.execute("DELETE FROM LocalRepo WHERE source = ?1", [source])
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        Ok(())
+    }
+
+    pub async fn versions_of(&self, source: &str, name: &str) -> ClientResult<Vec<DbPackage>> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                "SELECT source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies FROM LocalRepo WHERE source = ?1 AND name = ?2",
+                [source, name],
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        let mut packages = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+        {
+            packages.push(Self::row_to_package(row)?);
+        }
+        Ok(packages)
+    }
+
+    pub async fn sources_of(&self, name: &str) -> ClientResult<Vec<String>> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                "SELECT DISTINCT source FROM LocalRepo WHERE name = ?1",
+                [name],
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        let mut sources = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+        {
+            let source = row
+                .get_value(0)
+                .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+                .as_text()
+                .cloned()
+                .ok_or_else(|| {
+                    ClientError::Core(DatabaseError("source column is not text".to_string()))
+                })?;
+            sources.push(source);
+        }
+        Ok(sources)
+    }
+
+    /// 「最新版本」= 這個 (source, name) 底下 `rowid` 最大的那一列,也就是最後
+    /// 插入的那筆——不比較 semver。`dpm update` 每次整個 source 清空重灌,插入
+    /// 順序等於 `RepoInfo.json` 的陣列順序,等於伺服器端發布順序。真正的版本
+    /// 排序邏輯留給 Phase 5(pubgrub)。
+    pub async fn latest_version(
+        &self,
+        source: &str,
+        name: &str,
+    ) -> ClientResult<Option<DbPackage>> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                "SELECT source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies FROM LocalRepo WHERE source = ?1 AND name = ?2 ORDER BY rowid DESC LIMIT 1",
+                [source, name],
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        match rows
+            .next()
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+        {
+            Some(row) => Ok(Some(Self::row_to_package(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn download_file(
+        &self,
+        source: &str,
+        name: &str,
+        version: &str,
+        dest_path: &Path,
+    ) -> ClientResult<()> {
         let package = self
-            .read_one(name)
+            .read_one(source, name, version)
             .await?
             .ok_or_else(|| ClientError::Core(PackageNotFound(name.to_string())))?;
-        let url = &package.url;
-        let req = reqwest::get(url)
+        let url = package
+            .url
+            .ok_or_else(|| ClientError::Core(InvalidPackage(format!("{name} has no url"))))?;
+        let req = reqwest::get(&url)
             .await
             .map_err(|e| ClientError::Core(NetworkError(e.to_string())))?;
         if !req.status().is_success() {
