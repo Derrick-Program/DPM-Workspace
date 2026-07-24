@@ -1,11 +1,11 @@
 #![allow(warnings)]
-use crate::{Cli, CliCommands, Option_set, BIN, VERSION};
+use crate::{Cli, CliCommands, Option_set, SourceAction, BIN, VERSION};
 use anyhow::*;
 use clap::{value_parser, Arg, ArgAction, ArgGroup, ColorChoice, Command, ValueHint};
 use clap_complete::{generate, Generator, Shell};
 use std::io;
 
-fn build_cli() -> Command {
+pub fn build_cli() -> Command {
     Command::new(
         BIN.get()
             .unwrap_or_else(|| panic!("BIN is not initialized"))
@@ -139,6 +139,27 @@ fn build_cli() -> Command {
                     .long("verbose")
                     .action(ArgAction::SetTrue),
             ),
+        Command::new("source")
+            .about("Manage package sources")
+            .subcommand_required(true)
+            .arg_required_else_help(true)
+            .subcommand(
+                Command::new("add")
+                    .about("Add a package source")
+                    .arg(Arg::new("URL").value_name("URL").required(true))
+                    .arg(
+                        Arg::new("as")
+                            .long("as")
+                            .value_name("ALIAS")
+                            .help("Alias for this source (defaults to the URL host)"),
+                    ),
+            )
+            .subcommand(
+                Command::new("remove")
+                    .about("Remove a package source")
+                    .arg(Arg::new("ALIAS").value_name("ALIAS").required(true)),
+            )
+            .subcommand(Command::new("list").about("List configured package sources")),
     ])
     .arg(
         Arg::new("generator")
@@ -268,6 +289,23 @@ pub fn get_args() -> Result<Cli> {
             Commands = Some(CliCommands::UpgradeSelf);
             Verbose = sub_command.get_flag("verbose");
         }
+        Some(("source", sub_command)) => match sub_command.subcommand() {
+            Some(("add", add_args)) => {
+                Commands = Some(CliCommands::Source(SourceAction::Add {
+                    url: add_args.get_one::<String>("URL").unwrap().to_string(),
+                    alias: add_args.get_one::<String>("as").map(|s| s.to_string()),
+                }));
+            }
+            Some(("remove", remove_args)) => {
+                Commands = Some(CliCommands::Source(SourceAction::Remove {
+                    alias: remove_args.get_one::<String>("ALIAS").unwrap().to_string(),
+                }));
+            }
+            Some(("list", _)) => {
+                Commands = Some(CliCommands::Source(SourceAction::List));
+            }
+            _ => unreachable!("clap enforces subcommand_required(true) on `source`"),
+        },
         _ => return Err(anyhow!("Unrecognized command")),
     };
     let PackageName = if PN.is_empty() { None } else { Some(PN) };

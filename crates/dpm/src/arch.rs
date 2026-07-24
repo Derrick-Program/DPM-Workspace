@@ -13,7 +13,15 @@ pub enum CliCommands {
     Update,
     Upgrade,
     UpgradeSelf,
+    Source(SourceAction),
     None,
+}
+
+#[derive(Debug)]
+pub enum SourceAction {
+    Add { url: String, alias: Option<String> },
+    Remove { alias: String },
+    List,
 }
 #[derive(Debug)]
 pub struct Cli {
