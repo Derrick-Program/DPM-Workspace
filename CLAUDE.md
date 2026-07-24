@@ -19,8 +19,8 @@ crates/
 ## 架構重點
 
 - **Features**:`dpm-core` 有 `client` / `server` 兩個 feature,只 gate `impl` 區塊,**不可以 gate struct 欄位**(workspace 的 feature unification 會讓單獨編譯與整體編譯行為不同,之前就是這樣炸的)。feature 必須保持 additive。`RepoInfo` 的 CRUD 方法(`add_package`/`update_package`/`remove_package`)在 `server` feature 下,`fetch_update_repo_info`/`fetch_package`/`get_single_package_info` 在 `client` feature 下。
-- **Client 資料層**:diesel + SQLite,DB 在 `/opt/DPM/LocalRepo.db`,migration 用 `embed_migrations!` 內嵌(`crates/dpm/migrations/`),schema 在 `src/utils/schema.rs`。用 fs2 file lock(`/opt/DPM/LocalRepo.lock`)防多實例。`crates/dpm/diesel.toml` 的 `migrations_directory` 是舊 repo 分割前留下的絕對路徑,已經指向不存在的位置 —— 執行 `just migration-new`/`migration-run` 前先確認 diesel CLI 實際寫入/讀取到哪裡,別假設它對著 `crates/dpm/migrations`。
-- **權限模型**:Linux 需 root(`sudo::escalate_if_needed` 自動提權),macOS 用 `sudo` 呼叫個別指令。`SUDO_USER` 用來在提權後拿真實使用者做 chown。初始化順序:先確保 `/opt/DPM` 存在 → 開 DB → 其他動作(見 `dpm/src/lib.rs::set_globle_var` 與 `main.rs`)。
+- **Client 資料層**:`turso`(純 Rust、async、SQLite 相容)+ `geni` 做 migration。DB 檔案位置依安裝 scope 而定(見下方權限模型),migration SQL 檔放 `crates/dpm/migrations/`,用 `include_str!` 編進 binary,啟動時攤開到 DB 檔案同層的 `migrations/` 資料夾再交給 `geni::migrate_database` 執行。用 fs2 file lock(`<data_dir>/LocalRepo.lock`)防多實例。舊的 `diesel.toml`/`schema.rs`/diesel migration 機制已完全移除。
+- **權限模型**:雙 scope。預設 per-user,安裝路徑用 `directories::ProjectDirs::from("com", "duacodie", "dpm")`,完全不需要 root,`SystemController::permision_check`/`system_command_runner` 內部依 `SCOPE`(`OnceLock<Scope>`)自我短路,per-user 模式下不會呼叫 sudo/chown。加上 `--system`/`-S` flag 才走 shared 安裝(`/opt/com.duacodie/DPM`),行為跟舊版一致:Linux 整進程 `sudo::escalate_if_needed()` 提權,macOS 逐指令 `sudo`,`SUDO_USER` 用來取得原始使用者做 chown。scope 由 `main.rs` 在呼叫 `set_globle_var(scope)` 前,從解析出來的 `Cli.System` 決定(見 `dpm/src/lib.rs::set_globle_var` 與 `main.rs`)。
 - **Client CLI 手刻 vs Server CLI derive**:`dpm` 的 `cli_parse.rs` 用 `clap::Command` 手動建構(`build_cli()`)並在 `get_args()` 手動 match 每個 subcommand 填 `Cli` struct;`dpm-server` 用 `#[derive(Parser)]`/`#[derive(Subcommand)]`。兩邊新增 subcommand 的改法不同,改 `dpm` 那邊要同時改 `build_cli()` 與 `get_args()` 的 match。
 - **Server 資料**:`Repo/` 放打包好的 `.zip`,`Repo/src/<pkg>/` 放原始碼 + `packageInfo.json` + `hashes.json`,索引是 `RepoInfo.json`。`dpm-server` 的四個子指令對應 `action.rs`:`init`(建立套件骨架)→`hash`(算 `Repo/src/<pkg>/` 下所有檔案的 SHA256 寫入 `hashes.json`,並回填 `packageInfo.json.hash`)→`build`(zip 打包到 `Repo/<pkg>.zip`)→`fix add/del`(把套件加入/移除 `RepoInfo.json` 索引)。
 - **序列化相容**:`PackageBasicInfo` 的 `entry`/`description` 是 `Option` + `#[serde(default, skip_serializing_if)]`,改欄位時注意舊 JSON 相容性。
@@ -32,6 +32,7 @@ crates/
 - `crates/dpm/src/utils/system.rs` 的 `init()`:`repo_url`/`repo_info` 塞進 config HashMap 後沒有寫回 `config.json`(檔案永遠是 `{}`)。
 - 權限模型不一致:Linux `chown -R root:root`,macOS `chown user:admin`。
 - `PackageManager::Unknown` 與 unsupported OS 走 `panic!`,應改為錯誤回傳(`system.rs` 裡多處 `match` 分支)。
+- `geni` 內部釘的 `turso` 版號(`^0.6.1`)跟專案直接依賴的 `turso`(`0.7.1`)不一致,依賴樹裡會有兩份 turso,非阻塞但之後 `geni` 出新版對齊時可以清掉。
 
 ## 常用指令
 
