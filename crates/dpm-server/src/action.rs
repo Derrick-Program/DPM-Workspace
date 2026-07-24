@@ -130,24 +130,49 @@ fn fix_add(obj: &Add, repo: &mut RepoInfo) -> Result<()> {
     }
     let pk_info: PackageInfo = JsonStorage::from_json(&path.join("packageInfo.json"))?;
 
-    let data: PackageBasicInfo = PackageBasicInfo {
-        file_name: format!("{}.zip", pk_info.package_name),
-        version: pk_info.version,
-        hash: dpm_core::hash_file(&package)?,
-        url: format!(
-            "https://github.com/Derrick-Program/DPM-Server/raw/main/Repo/{}.zip",
-            obj.project_name
-        ),
+    let version_info = PackageVersionInfo {
+        version: pk_info.version.clone(),
+        kind: PackageKind::Prebuilt {
+            url: format!(
+                "https://github.com/Derrick-Program/DPM-Server/raw/main/Repo/{}.zip",
+                obj.project_name
+            ),
+            hash: dpm_core::hash_file(&package)?,
+            file_name: format!("{}.zip", pk_info.package_name),
+        },
         dependencies: pk_info.dependencies,
         entry: None,
         description: Some(pk_info.description),
     };
-    repo.add_package_with_info(obj.project_name.clone().to_string(), data);
+    repo.add_package_version(obj.project_name.clone(), version_info)?;
     Ok(())
 }
 fn fix_del(obj: &Del, repo: &mut RepoInfo) -> Result<()> {
-    repo.remove_package(&obj.project_name)?;
-    println!("Package '{}' removed successfully.", obj.project_name);
+    let version = match &obj.version {
+        Some(v) => v.clone(),
+        None => {
+            let versions = repo.versions_of(&obj.project_name)?;
+            if versions.len() > 1 {
+                return Err(anyhow::anyhow!(
+                    "\nPackage {} has {} published versions — specify which one to remove",
+                    obj.project_name.yellow(),
+                    versions.len()
+                ));
+            }
+            versions
+                .first()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("\nPackage {} not found", obj.project_name.yellow())
+                })?
+                .version
+                .clone()
+        }
+    };
+    repo.remove_package_version(&obj.project_name, &version)?;
+    println!(
+        "Package '{}@{}' removed successfully.",
+        obj.project_name, version
+    );
     Ok(())
 }
 
@@ -165,19 +190,21 @@ pub fn repo_init(repo: &mut RepoInfo) -> Result<()> {
             ));
         }
         let pk_info: PackageInfo = JsonStorage::from_json(&project.join("packageInfo.json"))?;
-        let data: PackageBasicInfo = PackageBasicInfo {
-            version: pk_info.version,
-            url: format!(
-                "https://github.com/Derrick-Program/DPM-Server/raw/main/Repo/{}.zip",
-                pk_info.package_name
-            ),
-            hash: pk_info.hash,
-            file_name: name.clone(),
+        let version_info = PackageVersionInfo {
+            version: pk_info.version.clone(),
+            kind: PackageKind::Prebuilt {
+                url: format!(
+                    "https://github.com/Derrick-Program/DPM-Server/raw/main/Repo/{}.zip",
+                    pk_info.package_name
+                ),
+                hash: pk_info.hash.clone(),
+                file_name: name.clone(),
+            },
             dependencies: pk_info.dependencies,
             entry: None,
             description: Some(pk_info.description),
         };
-        repo.add_package_with_info(name_witout_zip.to_string(), data);
+        repo.add_package_version(name_witout_zip.to_string(), version_info)?;
         println!("Done...");
     }
 

@@ -56,10 +56,16 @@ pub struct Add {
     pub project_name: String,
 }
 
+// `disable_version_flag`: the derived positional `version` field's arg id collides
+// with clap's auto `-V`/`--version` flag (from `propagate_version = true` on the
+// top-level `Cli`), which trips a debug_assert panic at runtime otherwise.
 #[derive(Args, Debug)]
+#[command(disable_version_flag = true)]
 pub struct Del {
     /// Project Name
     pub project_name: String,
+    /// Version to remove (required if the package has more than one published version)
+    pub version: Option<String>,
 }
 
 pub fn get_styles() -> clap::builder::Styles {
