@@ -77,10 +77,7 @@ pub fn build(obj: &Build) -> Result<()> {
 }
 
 pub fn init(obj: &Init) -> Result<()> {
-    let project_path = current_dir()
-        .unwrap()
-        .join("Repo/src")
-        .join(obj.name.as_str());
+    let project_path = PROJECT_SRC.get().unwrap().join(obj.name.as_str());
     if !project_path.exists() {
         create_dir_all(&project_path)?;
     } else {
@@ -115,9 +112,7 @@ pub fn fix(obj: &Fix, repo: &mut RepoInfo) -> Result<()> {
 }
 
 fn fix_add(obj: &Add, repo: &mut RepoInfo) -> Result<()> {
-    let path = std::env::current_dir()?
-        .join("Repo/src")
-        .join(&obj.project_name);
+    let path = PROJECT_SRC.get().unwrap().join(&obj.project_name);
     let package = current_dir()?
         .join("Repo")
         .join(format!("{}.zip", obj.project_name));

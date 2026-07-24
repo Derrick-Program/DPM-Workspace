@@ -28,7 +28,7 @@ struct Cli {
 static PROJECT_SRC: OnceLock<PathBuf> = OnceLock::new();
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let repo_src = current_dir()?.join("Repo/src");
+    let repo_src = current_dir()?.join("packages");
     PROJECT_SRC.set(repo_src.clone()).unwrap();
     let software_repo_info = current_dir()?.join("RepoInfo.json");
     create_dir_all(repo_src)?;
