@@ -6,11 +6,11 @@ use std::{
 
 use crate::{
     get_db, read_file_from_zip, system::*, unzip_file, ClientError, ClientResult, DbPackage,
-    Hashes, Setting, BIN_DIR, INSTALL_DIR, MAIN_DIR,
+    Hashes, Setting, Source, SourceAction, BIN_DIR, CONFIG, INSTALL_DIR, MAIN_DIR,
 };
 use colored::Colorize;
 use dpm_core::CoreError;
-use dpm_core::{Dependency, JsonStorage, PackageInfo, RepoInfo};
+use dpm_core::{Dependency, JsonStorage, PackageInfo, PackageKind, RepoInfo};
 use walkdir::WalkDir;
 #[derive(Debug)]
 pub struct ActionInfo {
@@ -49,8 +49,26 @@ impl ActionInfo {
         if !is.is_empty() {
             for pkg in is {
                 let pkg = pkg.as_str();
+                let sources = get_db()
+                    .sources_of(pkg)
+                    .await
+                    .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
+                let source_alias = match sources.len() {
+                    0 => {
+                        return Err(ClientError::Core(CoreError::PackageNotFound(
+                            pkg.to_string(),
+                        )))
+                    }
+                    1 => sources.into_iter().next().unwrap(),
+                    _ => {
+                        return Err(ClientError::Core(CoreError::AmbiguousPackage(format!(
+                            "{pkg} (found in: {})",
+                            sources.join(", ")
+                        ))))
+                    }
+                };
                 let repo_package_info = get_db()
-                    .read_one(pkg)
+                    .latest_version(&source_alias, pkg)
                     .await
                     .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?
                     .ok_or_else(|| {
@@ -68,9 +86,14 @@ impl ActionInfo {
                     .tempdir_in(&staging_root_base)
                     .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
 
-                let download_path = staging.path().join(&repo_package_info.filename);
+                let filename = repo_package_info.filename.clone().ok_or_else(|| {
+                    ClientError::Core(CoreError::InvalidPackage(format!(
+                        "{pkg} has no downloadable file (source package kind not yet installable)"
+                    )))
+                })?;
+                let download_path = staging.path().join(&filename);
                 get_db()
-                    .download_file(pkg, &download_path)
+                    .download_file(&source_alias, pkg, &repo_package_info.version, &download_path)
                     .await
                     .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?;
                 if self.verbose {
@@ -93,9 +116,14 @@ impl ActionInfo {
                     );
                 }
                 let hash = dpm_core::hash_file(&download_path)?;
-                if repo_package_info.hash != hash {
+                let expected_hash = repo_package_info.hash.clone().ok_or_else(|| {
+                    ClientError::Core(CoreError::InvalidPackage(format!(
+                        "{pkg} has no hash recorded"
+                    )))
+                })?;
+                if expected_hash != hash {
                     return Err(ClientError::Core(CoreError::HashMismatch {
-                        expected: repo_package_info.hash,
+                        expected: expected_hash,
                         actual: hash,
                     }));
                 }
@@ -149,74 +177,133 @@ impl ActionInfo {
         Ok(())
     }
 
+    /// 抓某一個來源的完整索引,清空該來源在本地 DB 的舊資料,把每個套件的每個
+    /// 版本各自插入一列。`update()`(既有來源全部重整)、`init_update()`
+    /// (`init()` 第一次執行時的初始灌入)共用這個邏輯——原本兩處各自複製一份
+    /// 幾乎相同的程式碼。
+    async fn sync_source(source: &Source) -> ClientResult<()> {
+        let mut remote_repo = RepoInfo::new();
+        remote_repo
+            .fetch_update_repo_info(&source.repo_info)
+            .await?;
+
+        get_db().clear_table_for_source(&source.alias).await?;
+
+        for (name, versions) in remote_repo.get_package_handler() {
+            for version_info in versions {
+                let dependencies: Option<Vec<dpm_core::Dependency>> =
+                    version_info.dependencies.as_ref().map(|deps| {
+                        deps.iter()
+                            .map(|dep| Dependency::new(&dep.name, &dep.version))
+                            .collect::<Vec<_>>()
+                    });
+                let (kind_str, url, hash, filename, build_command) = match &version_info.kind {
+                    PackageKind::Prebuilt {
+                        url,
+                        hash,
+                        file_name,
+                    } => (
+                        "prebuilt".to_string(),
+                        Some(url.clone()),
+                        Some(hash.clone()),
+                        Some(file_name.clone()),
+                        None,
+                    ),
+                    PackageKind::Source { build } => {
+                        ("source".to_string(), None, None, None, Some(build.clone()))
+                    }
+                };
+                get_db()
+                    .insert(DbPackage::new(
+                        &source.alias,
+                        name,
+                        &version_info.version,
+                        &kind_str,
+                        url,
+                        hash,
+                        filename,
+                        build_command,
+                        version_info.description.as_deref().unwrap_or(""),
+                        version_info.entry.as_deref().unwrap_or(""),
+                        dependencies,
+                    ))
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn update(&self) -> ClientResult<()> {
         println!("{} Updating...", "==>".blue());
-        let mut remote_repo = RepoInfo::new();
-
-        let repo_info_url = self.setting_config.get("repo_info").ok_or_else(|| {
-            ClientError::ConfigError("Missing 'repo_info' in settings".to_string())
-        })?;
-
-        // 獲取更新的遠程資料
-        remote_repo.fetch_update_repo_info(repo_info_url).await?;
-        let db = get_db();
-
-        db.clear_table("LocalRepo").await?;
-
-        let repo_handler = remote_repo.get_package_handler();
-
-        for (name, repo_info) in repo_handler {
-            let dependencies1: Option<Vec<dpm_core::Dependency>> =
-                repo_info.dependencies.as_ref().map(|deps| {
-                    deps.iter()
-                        .map(|dep| Dependency::new(&dep.name, &dep.version))
-                        .collect::<Vec<_>>()
-                });
-            let package_info = remote_repo.get_single_package_info(name).await?;
-            println!("{} Updating...", name.green());
-            get_db()
-                .insert(DbPackage::new(
-                    name,
-                    repo_info.version.as_str(),
-                    repo_info.url.as_str(),
-                    package_info.description.as_str(),
-                    repo_info.file_name.as_str(),
-                    repo_info.hash.as_str(),
-                    package_info.file_name.as_str(),
-                    dependencies1,
-                ))
-                .await?;
+        for source in &self.setting_config.sources {
+            println!("{} Updating source '{}'...", "==>".blue(), source.alias);
+            Self::sync_source(source).await?;
         }
-        // update_package_index(self.verbose);
         println!("{} Updated!", "==>".green());
         Ok(())
     }
-    pub async fn init_update(url_json: &str) -> ClientResult<()> {
-        let mut remote_repo = RepoInfo::new();
-        remote_repo.fetch_update_repo_info(url_json).await?;
-        for (name, repo_info) in remote_repo.get_package_handler() {
-            let dependencies1: Option<Vec<dpm_core::Dependency>> =
-                repo_info.dependencies.as_ref().map(|deps| {
-                    deps.iter()
-                        .map(|dep| Dependency::new(&dep.name, &dep.version))
-                        .collect::<Vec<_>>()
+
+    pub async fn init_update(source: &Source) -> ClientResult<()> {
+        Self::sync_source(source).await
+    }
+
+    pub async fn source(&self, action: SourceAction) -> ClientResult<()> {
+        let config_path = CONFIG.get().unwrap().join("config.json");
+        let mut setting: Setting = JsonStorage::from_json(&config_path)?;
+
+        match action {
+            SourceAction::Add { url, alias } => {
+                if !url.starts_with("https://") {
+                    return Err(ClientError::ConfigError(
+                        "source url must use https://".to_string(),
+                    ));
+                }
+                let alias = alias.unwrap_or_else(|| {
+                    url.trim_start_matches("https://")
+                        .split('/')
+                        .next()
+                        .unwrap_or(&url)
+                        .to_string()
                 });
-            get_db()
-                .insert(DbPackage::new(
-                    name,
-                    repo_info.version.as_str(),
-                    repo_info.url.as_str(),
-                    repo_info
-                        .description
-                        .as_ref()
-                        .unwrap_or(&String::new())
-                        .as_str(),
-                    repo_info.file_name.as_str(),
-                    repo_info.hash.as_str(),
-                    repo_info.entry.as_ref().unwrap_or(&String::new()).as_str(),
-                    dependencies1,
-                ))
-                .await?;
+                if setting.sources.iter().any(|s| s.alias == alias) {
+                    return Err(ClientError::ConfigError(format!(
+                        "source alias '{alias}' already exists"
+                    )));
+                }
+                if alias != "official" {
+                    println!(
+                        "{} third-party source, not vetted by the DPM team",
+                        "Warning:".yellow()
+                    );
+                }
+                setting.sources.push(Source {
+                    alias,
+                    repo_url: url.clone(),
+                    repo_info: url,
+                });
+                JsonStorage::to_json(&setting, &config_path)?;
+                println!(
+                    "{}",
+                    "Source added. Run `dpm update` to fetch its index.".green()
+                );
+            }
+            SourceAction::Remove { alias } => {
+                let before = setting.sources.len();
+                setting.sources.retain(|s| s.alias != alias);
+                if setting.sources.len() == before {
+                    return Err(ClientError::ConfigError(format!(
+                        "no source with alias '{alias}'"
+                    )));
+                }
+                JsonStorage::to_json(&setting, &config_path)?;
+                get_db().clear_table_for_source(&alias).await?;
+                println!("{}", "Source removed.".green());
+            }
+            SourceAction::List => {
+                for source in &setting.sources {
+                    println!("{}  {}", source.alias.green(), source.repo_info);
+                }
+            }
         }
         Ok(())
     }

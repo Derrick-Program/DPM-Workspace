@@ -60,6 +60,7 @@ pub async fn entry(config: Cli) -> ClientResult<()> {
         CliCommands::Update => pass_info.update().await?,
         CliCommands::Upgrade => pass_info.upgrade().await?,
         CliCommands::UpgradeSelf => pass_info.upgrade_self(),
+        CliCommands::Source(action) => pass_info.source(action).await?,
         CliCommands::None => panic!("No command found"),
     }
     SystemController.permision_check()?;
