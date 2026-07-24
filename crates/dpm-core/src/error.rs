@@ -31,6 +31,9 @@ pub enum CoreError {
 
     #[error("Security error: {0}")]
     SecurityError(String),
+
+    #[error("Ambiguous package '{0}': exists in multiple sources, specify source/name")]
+    AmbiguousPackage(String),
 }
 #[allow(dead_code)]
 pub type CoreResult<T> = Result<T, CoreError>;

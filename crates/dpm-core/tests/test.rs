@@ -3,83 +3,125 @@ mod tests {
     use dpm_core::*;
     use std::path::Path;
 
-    #[cfg(feature = "server")]
-    mod server_tests {
+    mod versioning_tests {
         use dpm_core::*;
-        #[test]
-        fn test_add_package() {
-            let mut repo = RepoInfo::new();
-            repo.add_package(
-                "package1".to_string(),
-                "http://example.com".to_string(),
-                "file1.zip".to_string(),
-                "1.0.0".to_string(),
-                "hash123".to_string(),
-                None,
-                None,
-                None,
-            );
 
-            assert!(repo.has_package("package1"));
-            let package = repo.get_package("package1").unwrap();
-            assert_eq!(package.version, "1.0.0");
-            assert_eq!(package.url, "http://example.com");
+        fn prebuilt(version: &str) -> PackageVersionInfo {
+            PackageVersionInfo {
+                version: version.to_string(),
+                kind: PackageKind::Prebuilt {
+                    url: format!("http://example.com/{version}"),
+                    hash: "hash123".to_string(),
+                    file_name: "file1.zip".to_string(),
+                },
+                dependencies: None,
+                entry: None,
+                description: None,
+            }
         }
 
         #[test]
-        fn test_remove_package() {
-            let mut repo = RepoInfo::new();
-            repo.add_package(
-                "package1".to_string(),
-                "http://example.com".to_string(),
-                "file1.zip".to_string(),
-                "1.0.0".to_string(),
-                "hash123".to_string(),
-                None,
-                None,
-                None,
-            );
-
-            let removed_package = repo.remove_package("package1").unwrap();
-            assert_eq!(removed_package.version, "1.0.0");
+        fn has_package_false_before_any_version_added() {
+            let repo = RepoInfo::new();
             assert!(!repo.has_package("package1"));
         }
 
         #[test]
-        fn test_update_package() {
-            let mut repo = RepoInfo::new();
-            repo.add_package(
-                "package1".to_string(),
-                "http://example.com".to_string(),
-                "file1.zip".to_string(),
-                "1.0.0".to_string(),
-                "hash123".to_string(),
-                None,
-                None,
-                None,
-            );
-
-            repo.update_package(
-                "package1",
-                Some("http://example.com/new".to_string()),
-                None,
-                Some("2.0.0".to_string()),
-                None,
-                None,
-                None,
-                None,
-            );
-
-            let package = repo.get_package("package1").unwrap();
-            assert_eq!(package.url, "http://example.com/new");
-            assert_eq!(package.version, "2.0.0");
+        fn versions_of_missing_package_is_not_found() {
+            let repo = RepoInfo::new();
+            let result = repo.versions_of("nonexistent");
+            assert!(result.is_err());
         }
 
-        #[test]
-        fn test_get_package_not_found() {
-            let repo = RepoInfo::new();
-            let result = repo.get_package("nonexistent");
-            assert!(result.is_err());
+        #[cfg(feature = "server")]
+        mod server_tests {
+            use super::prebuilt;
+            use dpm_core::*;
+
+            #[test]
+            fn add_package_version_appends_and_is_queryable() {
+                let mut repo = RepoInfo::new();
+                repo.add_package_version("package1".to_string(), prebuilt("1.0.0"))
+                    .unwrap();
+
+                assert!(repo.has_package("package1"));
+                let versions = repo.versions_of("package1").unwrap();
+                assert_eq!(versions.len(), 1);
+                assert_eq!(versions[0].version, "1.0.0");
+            }
+
+            #[test]
+            fn add_package_version_keeps_multiple_versions() {
+                let mut repo = RepoInfo::new();
+                repo.add_package_version("package1".to_string(), prebuilt("1.0.0"))
+                    .unwrap();
+                repo.add_package_version("package1".to_string(), prebuilt("2.0.0"))
+                    .unwrap();
+
+                let versions = repo.versions_of("package1").unwrap();
+                assert_eq!(versions.len(), 2);
+                assert_eq!(repo.latest_version("package1").unwrap().version, "2.0.0");
+            }
+
+            #[test]
+            fn add_package_version_rejects_duplicate_version() {
+                let mut repo = RepoInfo::new();
+                repo.add_package_version("package1".to_string(), prebuilt("1.0.0"))
+                    .unwrap();
+
+                let result = repo.add_package_version("package1".to_string(), prebuilt("1.0.0"));
+                assert!(
+                    result.is_err(),
+                    "publishing the same version twice must fail"
+                );
+            }
+
+            #[test]
+            fn remove_package_version_removes_only_that_version() {
+                let mut repo = RepoInfo::new();
+                repo.add_package_version("package1".to_string(), prebuilt("1.0.0"))
+                    .unwrap();
+                repo.add_package_version("package1".to_string(), prebuilt("2.0.0"))
+                    .unwrap();
+
+                let removed = repo.remove_package_version("package1", "1.0.0").unwrap();
+                assert_eq!(removed.version, "1.0.0");
+                let remaining = repo.versions_of("package1").unwrap();
+                assert_eq!(remaining.len(), 1);
+                assert_eq!(remaining[0].version, "2.0.0");
+            }
+
+            #[test]
+            fn remove_last_package_version_drops_the_package_entirely() {
+                let mut repo = RepoInfo::new();
+                repo.add_package_version("package1".to_string(), prebuilt("1.0.0"))
+                    .unwrap();
+
+                repo.remove_package_version("package1", "1.0.0").unwrap();
+                assert!(!repo.has_package("package1"));
+            }
+
+            #[test]
+            fn remove_package_version_missing_version_errors() {
+                let mut repo = RepoInfo::new();
+                repo.add_package_version("package1".to_string(), prebuilt("1.0.0"))
+                    .unwrap();
+
+                let result = repo.remove_package_version("package1", "9.9.9");
+                assert!(result.is_err());
+            }
+        }
+
+        #[cfg(feature = "client")]
+        mod client_tests {
+            use dpm_core::*;
+
+            #[tokio::test]
+            async fn get_package_info_unknown_version_errors() {
+                let repo = RepoInfo::new();
+                let result = repo.get_package_info("package1", "1.0.0").await;
+                assert!(result.is_err());
+            }
         }
     }
 

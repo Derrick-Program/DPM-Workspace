@@ -26,7 +26,7 @@
 - `package_name`：套件名稱。
 - `file_name`：套件檔案名稱。
 - `version`：套件版本。
-- ``：套件描述。
+- `description`：套件描述。
 - `hash`：套件檔案的雜湊值。
 - `dependencies`：可選的依賴列表。
 
@@ -43,29 +43,30 @@
 - `from_str_to(file_contents: &str)`：從字串反序列化 JSON 資料。
 
 ### `RepoInfo`
-管理一個套件的儲存庫。
+管理一個來源自己的套件索引；套件名稱映射到該套件所有已發布版本的列表。
 
 **欄位：**
-- `packages`：一個 `HashMap`，將套件名稱映射到 `PackageBasicInfo`。
+- `packages`：一個 `HashMap`，將套件名稱映射到 `Vec<PackageVersionInfo>`。
 
 **方法：**
 - `new()`：建立一個新的 `RepoInfo` 實例。
-- `has_package(package_name: &str)`：檢查儲存庫中是否存在指定套件。
-- `add_package`：向儲存庫中新增一個套件。
-- `add_package_with_info`：使用 `PackageBasicInfo` 實例新增一個套件。
-- `get_package`：根據名稱檢索套件資訊。
-- `remove_package`：根據名稱移除套件。
-- `update_package`：更新已存在的套件資訊。
+- `has_package(package_name: &str)`：檢查儲存庫中是否存在指定套件（任何版本）。
+- `versions_of(package_name: &str)`：取得某套件的所有已發布版本。
+- `latest_version(package_name: &str)`：取得某套件最新發布的版本。
+- `add_package_version`（`server` feature）：新增一個套件版本（拒絕重複版本號）。
+- `remove_package_version`（`server` feature）：移除某套件的特定版本。
+- `fetch_update_repo_info`（`client` feature）：從遠端整包覆蓋索引。
+- `get_package_info`（`client` feature）：取得某套件某版本的完整 `packageInfo.json`。
 
-### `PackageBasicInfo`
-簡化版的套件元數據。
+### `PackageVersionInfo` / `PackageKind`
+套件的一個發布版本；已發布版本視為不可變。
 
 **欄位：**
-- `url`：套件檔案的 URL。
-- `file_name`：套件檔案名稱。
 - `version`：套件版本。
-- `hash`：套件檔案的雜湊值。
+- `kind`：`PackageKind::Prebuilt { url, hash, file_name }` 或 `PackageKind::Source { build }`。
 - `dependencies`：可選的依賴列表。
+- `entry`：可選的進入點。
+- `description`：可選的描述。
 
 ---
 
@@ -98,19 +99,25 @@ println!("{:?}", data);
 
 ### 管理儲存庫
 ```rust
-use crate::{RepoInfo, Dependency};
+use dpm_core::{PackageKind, PackageVersionInfo, RepoInfo};
 
 let mut repo = RepoInfo::new();
-repo.add_package(
-    "example_package".to_string(),
-    "https://example.com/package".to_string(),
-    "example_file".to_string(),
-    "1.0.0".to_string(),
-    "abc123".to_string(),
-    None,
-);
+repo.add_package_version(
+    "my-package".to_string(),
+    PackageVersionInfo {
+        version: "1.0.0".to_string(),
+        kind: PackageKind::Prebuilt {
+            url: "https://example.com/my-package.zip".to_string(),
+            hash: "blake3-hash-here".to_string(),
+            file_name: "my-package.zip".to_string(),
+        },
+        dependencies: None,
+        entry: Some("bin/my-package".to_string()),
+        description: Some("An example package".to_string()),
+    },
+)?;
 
-if repo.has_package("example_package") {
+if repo.has_package("my-package") {
     println!("Package found.");
 }
 ```

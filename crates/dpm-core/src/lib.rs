@@ -1,10 +1,8 @@
 mod error;
 pub use error::*;
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::to_writer_pretty;
-use std::{collections::HashMap, env, io::Read, path::Path};
-use tokio::io::AsyncWriteExt;
+use std::{collections::HashMap, io::Read, path::Path};
 
 /// 對檔案內容算 blake3 hash,回傳小寫十六進位字串。
 /// client(安裝驗證)、server(發布時算 hash)共用同一份實作。
@@ -127,32 +125,39 @@ where
     }
 }
 
-/// 儲存庫的資訊管理模組
-#[derive(Debug, Serialize, Deserialize, Default)]
-pub struct RepoInfo {
-    /// 儲存庫內的套件映射
-    packages: HashMap<String, PackageBasicInfo>,
+/// 套件在某個來源索引裡的一個具體版本條目。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum PackageKind {
+    /// 已預先打包好的二進位/壓縮檔,client 直接下載解壓。
+    Prebuilt {
+        url: String,
+        hash: String,
+        file_name: String,
+    },
+    /// 只提供原始碼 + build 指令,client 在本機執行 build(Phase 4 才會真的走這條路)。
+    Source { build: String },
 }
-#[derive(Debug, Serialize, Deserialize)]
-/// 套件的基本資訊
-pub struct PackageBasicInfo {
-    /// 套件的下載 URL
-    pub url: String,
-    /// 套件的檔案名稱
-    pub file_name: String,
-    /// 套件的版本
+
+/// 套件的一個發布版本。已發布的版本視為不可變——要變更只能發布新版本或撤下整個版本。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PackageVersionInfo {
     pub version: String,
-    /// 套件檔案的雜湊值
-    pub hash: String,
-    /// 套件的依賴列表（可選）
+    #[serde(flatten)]
+    pub kind: PackageKind,
     pub dependencies: Option<Vec<Dependency>>,
-    /// 套件的進入點（可選，主要供 client 使用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
-
-    /// 套件的描述（可選，主要供 client 使用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+/// 儲存庫的資訊管理模組——代表「一個來源」自己的索引,不含來源名稱本身
+/// (來源是 client 端 config 的概念,見 `dpm` crate 的 `Source`/`Setting`)。
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct RepoInfo {
+    /// 套件名稱 -> 該套件所有已發布版本(依發布順序,不排序)
+    packages: HashMap<String, Vec<PackageVersionInfo>>,
 }
 impl RepoInfo {
     /// 建立一個新的 `RepoInfo` 實例
@@ -161,171 +166,104 @@ impl RepoInfo {
             packages: HashMap::new(),
         }
     }
-    /// 檢查是否存在指定名稱的套件
-    ///
-    /// # 參數
-    /// - `package_name`: 套件名稱
-    ///
-    /// # 回傳
-    /// 若存在回傳 `true`，否則回傳 `false`
+    /// 檢查是否存在指定名稱的套件(任何版本)
     pub fn has_package(&self, package_name: &str) -> bool {
         self.packages.contains_key(package_name)
     }
-    /// 根據名稱獲取套件
-    ///
-    /// # 參數
-    /// - `package_name`: 套件名稱
-    ///
-    /// # 回傳
-    /// 回傳套件資訊或錯誤
-    pub fn get_package(&self, package_name: &str) -> CoreResult<&PackageBasicInfo> {
-        match self.packages.get(package_name) {
-            Some(package) => Ok(package),
-            None => Err(CoreError::PackageNotFound(package_name.to_string())),
-        }
+    /// 取得某套件的所有已發布版本
+    pub fn versions_of(&self, package_name: &str) -> CoreResult<&Vec<PackageVersionInfo>> {
+        self.packages
+            .get(package_name)
+            .ok_or_else(|| CoreError::PackageNotFound(package_name.to_string()))
     }
-    pub fn get_package_handler(&self) -> &HashMap<String, PackageBasicInfo> {
+    /// 取得某套件「最新」的版本——依發布順序(`Vec` 最後一筆),不比較 semver。
+    pub fn latest_version(&self, package_name: &str) -> CoreResult<&PackageVersionInfo> {
+        self.versions_of(package_name)?
+            .last()
+            .ok_or_else(|| CoreError::PackageNotFound(package_name.to_string()))
+    }
+    pub fn get_package_handler(&self) -> &HashMap<String, Vec<PackageVersionInfo>> {
         &self.packages
     }
 }
+
 #[cfg(feature = "server")]
-#[allow(clippy::too_many_arguments)]
 impl RepoInfo {
-    /// 新增一個套件到儲存庫
-    ///
-    /// # 參數
-    /// - `name`: 套件名稱
-    /// - 其他參數：套件的相關資訊
-    pub fn add_package(
+    /// 新增一個套件版本。同一個套件名稱下,`info.version` 不能跟既有版本重複
+    /// (已發布版本不可變——要換內容是撤下重發,不是原地覆寫)。
+    pub fn add_package_version(
         &mut self,
         name: String,
-        url: String,
-        file_name: String,
-        version: String,
-        hash: String,
-        dependencies: Option<Vec<Dependency>>,
-        entry: Option<String>,
-        description: Option<String>,
-    ) {
-        let package = PackageBasicInfo {
-            url,
-            file_name,
-            version,
-            hash,
-            dependencies,
-            entry,
-            description,
-        };
-        self.packages.insert(name, package);
-    }
-    /// 透過 `PackageBasicInfo` 新增一個套件
-    pub fn add_package_with_info(&mut self, name: String, info: PackageBasicInfo) {
-        self.packages.insert(name, info);
+        info: PackageVersionInfo,
+    ) -> CoreResult<()> {
+        let versions = self.packages.entry(name).or_default();
+        if versions.iter().any(|v| v.version == info.version) {
+            return Err(CoreError::VersionMismatch(format!(
+                "version {} is already published",
+                info.version
+            )));
+        }
+        versions.push(info);
+        Ok(())
     }
 
-    /// 根據名稱移除套件
-    pub fn remove_package(&mut self, package_name: &str) -> CoreResult<PackageBasicInfo> {
-        match self.packages.remove(package_name) {
-            Some(package) => Ok(package),
-            None => Err(CoreError::PackageNotFound(package_name.to_string())),
-        }
-    }
-    /// 更新儲存庫中的套件資訊
-    pub fn update_package(
+    /// 移除某套件的特定版本。移除後若該套件已無任何版本,連同套件名稱一起移除。
+    pub fn remove_package_version(
         &mut self,
         package_name: &str,
-        url: Option<String>,
-        file_name: Option<String>,
-        version: Option<String>,
-        hash: Option<String>,
-        dependencies: Option<Vec<Dependency>>,
-        entry: Option<String>,
-        description: Option<String>,
-    ) {
-        if let Some(existing_package) = self.packages.get_mut(package_name) {
-            if let Some(new_url) = url {
-                existing_package.url = new_url;
-            }
-            if let Some(new_file_name) = file_name {
-                existing_package.file_name = new_file_name;
-            }
-            if let Some(new_version) = version {
-                existing_package.version = new_version;
-            }
-            if let Some(new_hash) = hash {
-                existing_package.hash = new_hash;
-            }
-            if let Some(new_dependencies) = dependencies {
-                existing_package.dependencies = Some(new_dependencies);
-            }
-            if let Some(new_entry) = entry {
-                existing_package.entry = Some(new_entry);
-            }
-            if let Some(new_description) = description {
-                existing_package.description = Some(new_description);
-            }
-        } else {
-            self.packages.insert(
-                package_name.to_string(),
-                PackageBasicInfo {
-                    url: url.unwrap_or_default(),
-                    file_name: file_name.unwrap_or_default(),
-                    version: version.unwrap_or_default(),
-                    hash: hash.unwrap_or_default(),
-                    dependencies,
-                    entry,
-                    description,
-                },
-            );
+        version: &str,
+    ) -> CoreResult<PackageVersionInfo> {
+        let versions = self
+            .packages
+            .get_mut(package_name)
+            .ok_or_else(|| CoreError::PackageNotFound(package_name.to_string()))?;
+        let idx = versions
+            .iter()
+            .position(|v| v.version == version)
+            .ok_or_else(|| CoreError::PackageNotFound(format!("{package_name}@{version}")))?;
+        let removed = versions.remove(idx);
+        if versions.is_empty() {
+            self.packages.remove(package_name);
         }
+        Ok(removed)
     }
 }
 
 #[cfg(feature = "client")]
 impl RepoInfo {
+    /// 從遠端抓某個來源的完整索引,整包覆蓋 `self`(這個 `RepoInfo` 實例代表
+    /// 單一來源;多來源合併是呼叫端——`dpm` crate——的責任,每個來源各自呼叫
+    /// 一次這個方法在自己的 `RepoInfo` 實例上)。
     pub async fn fetch_update_repo_info(&mut self, url: &str) -> CoreResult<()> {
         let repo_info: RepoInfo = JsonStorage::from_url(url).await?;
         self.packages = repo_info.packages;
         Ok(())
     }
-    pub async fn fetch_package(&self, pkg_name: &str) -> CoreResult<PackageInfo> {
-        if let Some(package) = self.packages.get(pkg_name) {
-            let url = package.url.as_str();
-            let package_info: PackageInfo = JsonStorage::from_url(url).await?;
-            let req = reqwest::get(url)
-                .await
-                .map_err(|e| CoreError::NetworkError(e.to_string()))?;
-            if !req.status().is_success() {
-                return Err(CoreError::NetworkError(format!(
-                    "Failed to fetch package '{}': {}",
-                    pkg_name,
-                    req.status()
-                )));
-            }
-            let filename = env::temp_dir().join(package.file_name.as_str());
-            let mut file = tokio::fs::File::create(&filename).await?;
-            let mut stream = req.bytes_stream();
-            while let Some(item) = stream.next().await {
-                let chunk = item.map_err(|e| CoreError::NetworkError(e.to_string()))?;
-                file.write_all(&chunk).await?;
-            }
 
-            Ok(package_info)
-        } else {
-            Err(CoreError::PackageNotFound(pkg_name.to_string()))
-        }
-    }
-    pub async fn get_single_package_info(&self, pkg_name: &str) -> CoreResult<PackageInfo> {
-        if let Some(package) = self.packages.get(pkg_name) {
-            let url = package.url.as_str();
-            let new_url = url.replace(
-                &package.file_name,
-                format!("src/{}/packageInfo.json", pkg_name).as_str(),
-            );
-            let package_info: PackageInfo = JsonStorage::from_url(&new_url).await?;
-            Ok(package_info)
-        } else {
-            Err(CoreError::PackageNotFound(pkg_name.to_string()))
+    /// 取得某套件某個特定版本的完整 `packageInfo.json`(只有 `Prebuilt` 版本
+    /// 有 URL 可抓;`Source` 版本目前回傳 `InvalidPackage` 錯誤,Phase 4 client
+    /// 端 source 安裝路徑落地後才會補上對應處理)。
+    pub async fn get_package_info(
+        &self,
+        package_name: &str,
+        version: &str,
+    ) -> CoreResult<PackageInfo> {
+        let versions = self.versions_of(package_name)?;
+        let entry = versions
+            .iter()
+            .find(|v| v.version == version)
+            .ok_or_else(|| CoreError::PackageNotFound(format!("{package_name}@{version}")))?;
+        match &entry.kind {
+            PackageKind::Prebuilt { url, file_name, .. } => {
+                let new_url = url.replace(
+                    file_name,
+                    format!("src/{package_name}/packageInfo.json").as_str(),
+                );
+                JsonStorage::from_url(&new_url).await
+            }
+            PackageKind::Source { .. } => Err(CoreError::InvalidPackage(format!(
+                "{package_name}@{version} is a source package, not yet installable"
+            ))),
         }
     }
 }
