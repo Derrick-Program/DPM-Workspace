@@ -316,8 +316,18 @@ fn swap_into_install_dir(
             .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
         if let Err(e) = std::fs::rename(new_dir, install_path) {
             // Roll back: put the old version back so install_path is never
-            // left missing/half-installed if the final rename fails.
-            let _ = std::fs::rename(&backup, install_path);
+            // left missing/half-installed if the final rename fails. If the
+            // rollback itself fails (double fault), the old install may be
+            // gone for good once the caller's staging TempDir is dropped, so
+            // this must never fail silently.
+            if let Err(rollback_err) = std::fs::rename(&backup, install_path) {
+                eprintln!(
+                    "CRITICAL: failed to restore backup after failed install \
+                     (install error: {e}; rollback error: {rollback_err}); \
+                     the previous install at {} may be lost",
+                    install_path.display()
+                );
+            }
             return Err(ClientError::Core(CoreError::IoError(e)));
         }
     } else {
@@ -388,6 +398,72 @@ mod atomic_install_tests {
             fs::read_to_string(install_path.join("marker.txt")).unwrap(),
             "v1",
             "old install must be untouched when the swap fails before completion"
+        );
+    }
+
+    /// Forces the double-fault path: the backup rename succeeds, the
+    /// new-content rename fails (missing `new_dir`), and then the rollback
+    /// rename is *also* made to fail by stripping write permission from
+    /// `root` the instant the backup lands. A background thread races the
+    /// call to `swap_into_install_dir` to flip that permission bit between
+    /// the first and second renames — both operations share `root` as their
+    /// parent directory, so there is no way to set this up with a static
+    /// permission change alone.
+    #[test]
+    #[cfg(unix)]
+    fn rollback_failure_still_returns_err_without_panicking() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().unwrap();
+        let missing_new_dir = root.path().join("does-not-exist");
+        let install_path = root.path().join("install");
+        fs::create_dir_all(&install_path).unwrap();
+        fs::write(install_path.join("marker.txt"), b"v1").unwrap();
+
+        let backup = root.path().join("previous");
+        let root_path = root.path().to_path_buf();
+
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let watcher_root = root_path.clone();
+        let watcher_backup = backup.clone();
+        let watcher = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            while !watcher_backup.exists() {
+                std::hint::spin_loop();
+            }
+            // The backup just landed: make root read-only so neither the
+            // new-content rename nor the rollback rename can (re)create the
+            // "install" entry inside it.
+            let mut perms = fs::metadata(&watcher_root).unwrap().permissions();
+            perms.set_mode(0o555);
+            fs::set_permissions(&watcher_root, perms).unwrap();
+        });
+        // Make sure the watcher is already spinning before we start the race.
+        ready_rx.recv().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let result = swap_into_install_dir(&missing_new_dir, &install_path, root.path());
+        watcher.join().unwrap();
+
+        // Restore permissions so the TempDir can clean itself up on drop.
+        let mut perms = fs::metadata(&root_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&root_path, perms).unwrap();
+
+        assert!(
+            result.is_err(),
+            "swap must still return Err (not panic, not silently succeed) \
+             when the rollback rename also fails"
+        );
+        assert!(
+            !install_path.exists(),
+            "when the rollback also fails, install_path must not silently end up \
+             restored or half-installed"
+        );
+        assert!(
+            backup.exists(),
+            "the backed-up old install must still be sitting in staging_root/previous \
+             (unrestored) since the rollback rename failed"
         );
     }
 }
