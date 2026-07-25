@@ -5,9 +5,9 @@ use std::{
 };
 
 use crate::{
-    clone_package_source, get_db, read_file_from_zip, system::*, unzip_file, ClientError,
-    ClientResult, DbPackage, Hashes, Setting, Source, SourceAction, BIN_DIR, CONFIG, INSTALL_DIR,
-    MAIN_DIR,
+    clone_package_source, get_db, parse_package_spec, read_file_from_zip, resolve_install_set,
+    system::*, unzip_file, ClientError, ClientResult, DbPackage, Hashes, Setting, Source,
+    SourceAction, BIN_DIR, CONFIG, INSTALL_DIR, MAIN_DIR,
 };
 use colored::Colorize;
 use dpm_core::CoreError;
@@ -31,49 +31,50 @@ impl ActionInfo {
             system_controller: SystemController,
         }
     }
-    async fn parse_mine(&self) -> (Vec<String>, Vec<String>) {
-        let mut is: Vec<String> = Vec::new();
-        let mut isnot: Vec<String> = Vec::new();
-        let all_packages = get_db().read_all().await.unwrap_or_else(|_| Vec::new());
-        let package_names: Vec<String> = all_packages.into_iter().map(|pkg| pkg.name).collect();
-        for pkg in &self.pkgs {
-            if package_names.contains(pkg) {
-                is.push(pkg.clone());
+    /// Splits `self.pkgs` (raw `[source/]name[@constraint]` strings) into
+    /// packages known to at least one configured source (`is`, parsed into
+    /// `(source_hint, name, constraint)` triples for `resolve_install_set`)
+    /// and packages not found locally at all (`isnot`, falls through to the
+    /// OS package manager) — same split as before, just keyed off the
+    /// parsed bare `name` instead of the raw spec string, since a spec like
+    /// `official/foo@^1.0` will never literally equal a DB `name` column.
+    fn parse_mine(
+        &self,
+        all_packages: &[DbPackage],
+    ) -> (Vec<(Option<String>, String, Option<String>)>, Vec<String>) {
+        let mut is = Vec::new();
+        let mut isnot = Vec::new();
+        for raw in &self.pkgs {
+            let (source, name, constraint) = parse_package_spec(raw);
+            if all_packages.iter().any(|p| p.name == name) {
+                is.push((
+                    source.map(str::to_string),
+                    name.to_string(),
+                    constraint.map(str::to_string),
+                ));
             } else {
-                isnot.push(pkg.clone());
+                isnot.push(name.to_string());
             }
         }
         (is, isnot)
     }
     pub async fn install(&self) -> ClientResult<()> {
-        let (is, isnot) = self.parse_mine().await;
+        let all_packages = get_db()
+            .read_all()
+            .await
+            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
+        let (is, isnot) = self.parse_mine(&all_packages);
         if !is.is_empty() {
-            for pkg in is {
-                let pkg = pkg.as_str();
-                let sources = get_db()
-                    .sources_of(pkg)
-                    .await
-                    .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
-                let source_alias = match sources.len() {
-                    0 => {
-                        return Err(ClientError::Core(CoreError::PackageNotFound(
-                            pkg.to_string(),
-                        )))
-                    }
-                    1 => sources.into_iter().next().unwrap(),
-                    _ => {
-                        return Err(ClientError::Core(CoreError::AmbiguousPackage(format!(
-                            "{pkg} (found in: {})",
-                            sources.join(", ")
-                        ))))
-                    }
-                };
-                let repo_package_info = get_db()
-                    .latest_version(&source_alias, pkg)
-                    .await
-                    .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?
+            let resolved = resolve_install_set(&all_packages, &is)?;
+            for (source_alias, name, version) in resolved {
+                let pkg = name.as_str();
+                let repo_package_info = all_packages
+                    .iter()
+                    .find(|p| p.source == source_alias && p.name == name && p.version == version)
                     .ok_or_else(|| {
-                        ClientError::Core(CoreError::PackageNotFound(pkg.to_string()))
+                        ClientError::Core(CoreError::PackageNotFound(format!(
+                            "{source_alias}/{name}@{version}"
+                        )))
                     })?;
                 if self.verbose {
                     println!("{}\n\n  {}", pkg.on_green(), "Downloading...".yellow());
@@ -423,9 +424,13 @@ impl ActionInfo {
     }
 
     pub async fn uninstall(&self) -> ClientResult<()> {
-        let (is, isnot) = self.parse_mine().await;
+        let all_packages = get_db()
+            .read_all()
+            .await
+            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
+        let (is, isnot) = self.parse_mine(&all_packages);
         if !is.is_empty() {
-            for pkg in is {
+            for (_, pkg, _) in is {
                 let pre_rm_location = INSTALL_DIR.get().unwrap().join(&pkg);
                 let pre_rm_ln = BIN_DIR.get().unwrap().join(&pkg);
                 if self.verbose {
@@ -452,10 +457,14 @@ impl ActionInfo {
     }
 
     pub async fn search(&self) -> ClientResult<()> {
-        let (is, isnot) = self.parse_mine().await;
+        let all_packages = get_db()
+            .read_all()
+            .await
+            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
+        let (is, isnot) = self.parse_mine(&all_packages);
         if !is.is_empty() {
             println!();
-            for pkg in is {
+            for (_, pkg, _) in is {
                 println!("{} {}", pkg, "Found!!".green());
             }
         }
@@ -481,9 +490,13 @@ impl ActionInfo {
     }
 
     pub async fn upgrade(&self) -> ClientResult<()> {
-        let (is, isnot) = self.parse_mine().await;
+        let all_packages = get_db()
+            .read_all()
+            .await
+            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
+        let (is, isnot) = self.parse_mine(&all_packages);
         if !is.is_empty() {
-            for pkg in is {
+            for (_, pkg, _) in is {
                 println!("{:#?}", pkg);
             }
         }
