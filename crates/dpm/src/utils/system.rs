@@ -239,15 +239,10 @@ impl SystemController {
         }
         Ok(())
     }
-    /// OS bootstrap only — no longer reaches into `ActionInfo` to seed the
-    /// first-run source index (that used to make this "system utility"
-    /// module the sole orchestrator of first-run business logic, while
-    /// `ActionInfo` itself constructs a `SystemController`: a two-way
-    /// dependency between the OS-utility seam and the command-orchestration
-    /// seam). The `bool` tells the caller whether `config.json` was just
-    /// created, so `entry()` — which already owns command dispatch — can
-    /// decide whether to seed sources, instead of that decision living here.
-    pub async fn init(&self, ctx: &Context) -> ClientResult<(Setting, bool)> {
+    /// Creates the scope's three directories (idempotent) and syncs their
+    /// ownership. Shared by `init_first_run`/`init_existing` — bootstrap
+    /// happens either way, only what's done with `config.json` differs.
+    fn bootstrap_dirs(&self, ctx: &Context) -> ClientResult<()> {
         self.system_command_runner(
             "mkdir",
             vec!["-p", ctx.install_dir.to_str().unwrap()],
@@ -263,22 +258,44 @@ impl SystemController {
             vec!["-p", ctx.bin_dir.to_str().unwrap()],
             "Can't create bin dir",
         )?;
-        self.permision_check(&ctx.main_dir)?;
+        self.permision_check(&ctx.main_dir)
+    }
+
+    /// OS bootstrap for the first-ever run on this machine/scope — no
+    /// longer reaches into `ActionInfo` to seed the first-run source index
+    /// (that used to make this "system utility" module the sole
+    /// orchestrator of first-run business logic, while `ActionInfo` itself
+    /// constructs a `SystemController`: a two-way dependency between the
+    /// OS-utility seam and the command-orchestration seam).
+    ///
+    /// Replaces the old `init() -> (Setting, bool)`, whose `bool` told the
+    /// caller whether `config.json` was just created so it could decide
+    /// whether to seed sources. `entry()` now checks `config.json`'s
+    /// existence itself and calls this function only on that branch, so
+    /// "was this the first run" and "should I seed sources" collapse into
+    /// the same call — there's no bool to let those two facts drift apart.
+    pub async fn init_first_run(&self, ctx: &Context) -> ClientResult<Setting> {
+        self.bootstrap_dirs(ctx)?;
         let config_path = ctx.config_dir.join("config.json");
-        let is_first_run = !config_path.exists();
-        if is_first_run {
-            let default_setting = Setting {
-                sources: vec![Source {
-                    alias: "official".to_string(),
-                    repo_url: OFFICIAL_REPO_URL.to_string(),
-                    repo_info: official_repo_info_url(OFFICIAL_REPO_URL),
-                }],
-            };
-            JsonStorage::to_json(&default_setting, &config_path)?;
-        }
+        let default_setting = Setting {
+            sources: vec![Source {
+                alias: "official".to_string(),
+                repo_url: OFFICIAL_REPO_URL.to_string(),
+                repo_info: official_repo_info_url(OFFICIAL_REPO_URL),
+            }],
+        };
+        JsonStorage::to_json(&default_setting, &config_path)?;
         self.permision_check(&ctx.main_dir)?;
-        let config: Setting = JsonStorage::from_json(&config_path)?;
-        Ok((config, is_first_run))
+        Ok(JsonStorage::from_json(&config_path)?)
+    }
+
+    /// OS bootstrap for every run after the first: `config.json` already
+    /// exists, so this only (re-)creates the scope's directories and reads
+    /// the existing config back.
+    pub async fn init_existing(&self, ctx: &Context) -> ClientResult<Setting> {
+        self.bootstrap_dirs(ctx)?;
+        let config_path = ctx.config_dir.join("config.json");
+        Ok(JsonStorage::from_json(&config_path)?)
     }
 }
 

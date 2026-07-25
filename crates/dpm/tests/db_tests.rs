@@ -30,7 +30,7 @@ mod db_tests {
             Some("test_pkg.tar.gz".to_string()),
             None,
             "A test package",
-            "bin/test_pkg",
+            Some("bin/test_pkg".to_string()),
             None,
         )
     }
@@ -54,6 +54,23 @@ mod db_tests {
         assert_eq!(all[0].name, "test_pkg");
         assert_eq!(all[0].source, "official");
         assert_eq!(all[0].version, "0.1.0");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_none_entry_round_trips_as_none_not_empty_string() -> TestResult {
+        // Regression guard for the entry column's Option<String> migration:
+        // a package with no entry point (e.g. a data-only source package)
+        // must come back as `None`, not `""`. `""` used to double as the
+        // "no entry" sentinel before the column became nullable.
+        let dir = tempdir()?;
+        let db = setup_db(dir.path()).await?;
+        let mut pkg = sample_pkg("official", "0.1.0");
+        pkg.entry = None;
+        db.insert(pkg).await?;
+
+        let found = db.read_one("official", "test_pkg", "0.1.0").await?;
+        assert_eq!(found.unwrap().entry, None);
         Ok(())
     }
 

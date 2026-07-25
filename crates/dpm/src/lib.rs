@@ -35,12 +35,16 @@ pub use utils::*;
 
 pub async fn entry(ctx: Context, config: Cli) -> ClientResult<()> {
     let system_controller = SystemController::new(ctx.scope);
-    let (setting_config, is_first_run) = system_controller.init(&ctx).await?;
-    if is_first_run {
-        for source in &setting_config.sources {
+    let config_path = ctx.config_dir.join("config.json");
+    let setting_config = if !config_path.exists() {
+        let setting = system_controller.init_first_run(&ctx).await?;
+        for source in &setting.sources {
             ActionInfo::init_update(&ctx, source).await?;
         }
-    }
+        setting
+    } else {
+        system_controller.init_existing(&ctx).await?
+    };
 
     match config.command {
         Some(Commands::Install { pn, verbose }) => {

@@ -15,7 +15,7 @@ pub struct DbPackage {
     pub filename: Option<String>,
     pub build_command: Option<String>,
     pub description: String,
-    pub entry: String,
+    pub entry: Option<String>,
     pub dependencies: Option<Vec<Dependency>>,
 }
 
@@ -31,7 +31,7 @@ impl DbPackage {
         filename: Option<String>,
         build_command: Option<String>,
         description: &str,
-        entry: &str,
+        entry: Option<String>,
         dependencies: Option<Vec<Dependency>>,
     ) -> Self {
         DbPackage {
@@ -44,7 +44,7 @@ impl DbPackage {
             filename,
             build_command,
             description: description.to_owned(),
-            entry: entry.to_owned(),
+            entry,
             dependencies,
         }
     }

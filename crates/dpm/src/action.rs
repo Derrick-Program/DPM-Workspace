@@ -140,7 +140,7 @@ impl ActionInfo {
                 place_package(
                     pkg,
                     &extracted,
-                    &package_info.file_name,
+                    Some(package_info.file_name.as_str()),
                     &self.ctx.install_dir,
                     &self.ctx.bin_dir,
                     staging.path(),
@@ -230,7 +230,7 @@ impl ActionInfo {
         place_package(
             pkg,
             &out_dir,
-            &repo_package_info.entry,
+            repo_package_info.entry.as_deref(),
             &self.ctx.install_dir,
             &self.ctx.bin_dir,
             staging.path(),
@@ -271,7 +271,7 @@ impl ActionInfo {
                         filename,
                         build_command,
                         version_info.description.as_deref().unwrap_or(""),
-                        version_info.entry.as_deref().unwrap_or(""),
+                        version_info.entry.clone(),
                         dependencies,
                     ))
                     .await?;

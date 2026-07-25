@@ -54,20 +54,38 @@ pub enum FixAction {
 pub struct Add {
     /// Project Name
     pub project_name: String,
-    /// External URL hosting the prebuilt package archive (mutually exclusive
-    /// with --build). dpm-server downloads it once to compute its blake3
-    /// hash — it does not keep a copy. Must be https://.
-    #[arg(long, conflicts_with = "build")]
-    pub url: Option<String>,
-    /// Override the file name recorded in RepoInfo.json (only meaningful
-    /// with --url; defaults to the URL's last path segment)
-    #[arg(long)]
-    pub file_name: Option<String>,
-    /// Shell command clients run locally to build this package from source
-    /// (mutually exclusive with --url). $OUT will point at the install
-    /// destination when clients actually run it (Phase 4 client-side work).
-    #[arg(long, conflicts_with = "url")]
-    pub build: Option<String>,
+    #[command(subcommand)]
+    pub kind: AddKind,
+}
+
+/// Mirrors `dpm_core::PackageKind`'s two variants at the CLI layer: exactly
+/// one of "publish from a URL" or "publish a source build" must be chosen.
+/// Previously `url`/`build` were two independently-optional `Add` fields
+/// with `conflicts_with` wiring them together, which only rejects the
+/// illegal "both" state at parse time — `fix_add` still had to defend
+/// against it (`unreachable!()`) and against "neither" with a runtime
+/// `ValidationError`. A subcommand makes "exactly one" a parse-time
+/// guarantee: there is no `AddKind` value that isn't a legal `PackageKind`.
+#[derive(Subcommand, Debug)]
+pub enum AddKind {
+    /// Publish a prebuilt package hosted at a URL
+    Url {
+        /// External URL hosting the prebuilt package archive. dpm-server
+        /// downloads it once to compute its blake3 hash — it does not keep
+        /// a copy. Must be https://.
+        url: String,
+        /// Override the file name recorded in RepoInfo.json (defaults to
+        /// the URL's last path segment)
+        #[arg(long)]
+        file_name: Option<String>,
+    },
+    /// Publish a source package clients build locally
+    Build {
+        /// Shell command clients run locally to build this package from
+        /// source. $OUT will point at the install destination when clients
+        /// actually run it (Phase 4 client-side work).
+        build: String,
+    },
 }
 
 // `disable_version_flag`: the derived positional `version` field's arg id collides

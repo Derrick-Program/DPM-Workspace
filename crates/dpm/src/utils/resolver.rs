@@ -484,7 +484,7 @@ mod tests {
             Some(format!("{name}.zip")),
             None,
             "",
-            "",
+            None,
             dependencies,
         )
     }

@@ -73,6 +73,16 @@ impl Db {
             include_str!("../../migrations/0002_multi_source.down.sql"),
         )
         .map_err(|e| ClientError::Core(IoError(e)))?;
+        std::fs::write(
+            migrations_dir.join("0003_nullable_entry.up.sql"),
+            include_str!("../../migrations/0003_nullable_entry.up.sql"),
+        )
+        .map_err(|e| ClientError::Core(IoError(e)))?;
+        std::fs::write(
+            migrations_dir.join("0003_nullable_entry.down.sql"),
+            include_str!("../../migrations/0003_nullable_entry.down.sql"),
+        )
+        .map_err(|e| ClientError::Core(IoError(e)))?;
 
         geni::migrate_database(
             format!("sqlite://{}", self.db_path),
@@ -130,7 +140,7 @@ impl Db {
             filename: get_opt_text("filename")?,
             build_command: get_opt_text("build_command")?,
             description: get_text("description")?,
-            entry: get_text("entry")?,
+            entry: get_opt_text("entry")?,
             dependencies: dependencies_json.and_then(|json| serde_json::from_str(&json).ok()),
         })
     }
@@ -155,7 +165,7 @@ impl Db {
             to_value(pkg.filename),
             to_value(pkg.build_command),
             turso::Value::Text(pkg.description),
-            turso::Value::Text(pkg.entry),
+            to_value(pkg.entry),
             to_value(dependencies_json),
         ];
         conn.execute(

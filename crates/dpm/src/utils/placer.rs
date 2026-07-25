@@ -82,7 +82,7 @@ fn entry_resolves_inside_install_dir(
 /// Installs already-ready content (an extracted zip for a `Prebuilt`
 /// package, a build's `$OUT` directory for a `Source` package) into
 /// `install_dir/pkg` atomically via `swap_into_install_dir`, then — if
-/// `entry` is non-empty — makes the entry executable and symlinks it into
+/// `entry` is `Some` — makes the entry executable and symlinks it into
 /// `bin_dir`.
 ///
 /// This is the "Placer" half of `install()`'s previously-fused six
@@ -90,16 +90,19 @@ fn entry_resolves_inside_install_dir(
 /// entry-safety-check + chmod + symlink blocks — one in the `Prebuilt`
 /// path (unconditional on `package_info.file_name`), one in
 /// `install_source_package` (conditional on `repo_package_info.entry` being
-/// non-empty). In practice `dpm-server`'s publish-side validation never
-/// lets a `Prebuilt` package's `file_name` be empty, so treating both
-/// uniformly as "conditional on non-empty" changes no real-world behavior
-/// — it only makes the never-actually-hit empty case skip cleanly instead
-/// of chmod'ing/symlinking the whole install directory as if it were the
-/// entry.
+/// `Some`). In practice `dpm-server`'s publish-side validation never lets a
+/// `Prebuilt` package's `file_name` be empty, so treating both uniformly as
+/// "conditional on `Some`" changes no real-world behavior — it only makes
+/// the never-actually-hit "no entry" case skip cleanly instead of
+/// chmod'ing/symlinking the whole install directory as if it were the
+/// entry. `entry` takes `Option<&str>` rather than `&str` with `""` meaning
+/// "none" — the empty string used to double as a sentinel the caller had to
+/// remember to check for; `None` makes "no entry" a value the type system
+/// enforces instead of a convention.
 pub fn place_package(
     pkg: &str,
     content_dir: &Path,
-    entry: &str,
+    entry: Option<&str>,
     install_dir: &Path,
     bin_dir: &Path,
     staging_root: &Path,
@@ -108,9 +111,9 @@ pub fn place_package(
     let install_path = install_dir.join(pkg);
     swap_into_install_dir(content_dir, &install_path, staging_root)?;
 
-    if entry.is_empty() {
+    let Some(entry) = entry.filter(|e| !e.is_empty()) else {
         return Ok(());
-    }
+    };
     if !entry_is_safe(entry) {
         return Err(ClientError::Core(CoreError::InvalidPackage(format!(
             "{pkg} has an unsafe entry path: {entry}"
@@ -154,7 +157,7 @@ mod tests {
         place_package(
             "pkg",
             &content_dir,
-            "main",
+            Some("main"),
             &install_dir,
             &bin_dir,
             root.path(),
@@ -173,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_entry_places_content_but_skips_linking() {
+    fn no_entry_places_content_but_skips_linking() {
         let root = tempdir().unwrap();
         let content_dir = root.path().join("content");
         fs::create_dir_all(&content_dir).unwrap();
@@ -187,7 +190,7 @@ mod tests {
         place_package(
             "pkg",
             &content_dir,
-            "",
+            None,
             &install_dir,
             &bin_dir,
             root.path(),
@@ -203,6 +206,37 @@ mod tests {
     }
 
     #[test]
+    fn some_empty_string_entry_is_treated_same_as_none() {
+        // Defends the `.filter(|e| !e.is_empty())` in place_package: even
+        // though the DB layer no longer produces "" as a "no entry"
+        // sentinel (it uses `None`), a `Some("")` passed directly must
+        // still degrade gracefully instead of being treated as a real
+        // (unsafe-path) entry.
+        let root = tempdir().unwrap();
+        let content_dir = root.path().join("content");
+        fs::create_dir_all(&content_dir).unwrap();
+        fs::write(content_dir.join("data"), b"just data").unwrap();
+        let install_dir = root.path().join("install");
+        let bin_dir = root.path().join("bin");
+        fs::create_dir_all(&install_dir).unwrap();
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let controller = SystemController::new(Scope::PerUser);
+        place_package(
+            "pkg",
+            &content_dir,
+            Some(""),
+            &install_dir,
+            &bin_dir,
+            root.path(),
+            &controller,
+        )
+        .unwrap();
+
+        assert!(!bin_dir.join("pkg").exists());
+    }
+
+    #[test]
     fn rejects_unsafe_entry_path() {
         let root = tempdir().unwrap();
         let content_dir = root.path().join("content");
@@ -215,7 +249,7 @@ mod tests {
         let result = place_package(
             "pkg",
             &content_dir,
-            "../../etc/passwd",
+            Some("../../etc/passwd"),
             &install_dir,
             &bin_dir,
             root.path(),

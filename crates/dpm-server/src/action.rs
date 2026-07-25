@@ -106,21 +106,20 @@ fn fix_add(obj: &Add, repo: &mut RepoInfo, project_src: &Path) -> ServerResult<(
     let path = project_src.join(&obj.project_name);
     let pk_info: PackageInfo = JsonStorage::from_json(&path.join("packageInfo.json"))?;
 
-    let kind = match (&obj.url, &obj.build) {
-        (Some(url), None) => {
+    let kind = match &obj.kind {
+        AddKind::Url { url, file_name } => {
             if !url.starts_with("https://") {
                 return Err(ServerError::ValidationError(format!(
-                    "--url {url} must use https://"
+                    "url {url} must use https://"
                 )));
             }
-            let file_name = obj
-                .file_name
+            let file_name = file_name
                 .clone()
                 .or_else(|| url.rsplit('/').next().map(|s| s.to_string()))
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
                     ServerError::ValidationError(
-                        "could not derive a file name from --url; pass --file-name explicitly"
+                        "could not derive a file name from the url; pass --file-name explicitly"
                             .to_string(),
                     )
                 })?;
@@ -144,16 +143,9 @@ fn fix_add(obj: &Add, repo: &mut RepoInfo, project_src: &Path) -> ServerResult<(
                 file_name,
             }
         }
-        (None, Some(build)) => PackageKind::Source {
+        AddKind::Build { build } => PackageKind::Source {
             build: build.clone(),
         },
-        (Some(_), Some(_)) => unreachable!("clap's conflicts_with already rejects this"),
-        (None, None) => {
-            return Err(ServerError::ValidationError(format!(
-                "fix add {} needs exactly one of --url or --build",
-                obj.project_name
-            )));
-        }
     };
 
     let version_info = PackageVersionInfo {
@@ -350,6 +342,102 @@ mod tests {
             package_info.hash.len(),
             64,
             "packageInfo.json.hash must be a full blake3 hex digest, not empty/truncated"
+        );
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    /// Regression guard for the `Add`/`AddKind` clap-enum refactor: the
+    /// `Build` variant must reach `PackageKind::Source` without touching the
+    /// network, and the resulting `RepoInfo` entry must carry the build
+    /// command through untouched.
+    #[test]
+    fn fix_add_build_variant_records_a_source_kind_package() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-action-fix-add-build-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+
+        init(
+            &Init {
+                name: "demo-pkg".to_string(),
+                entry: "main.sh".to_string(),
+                ver: "0.1.0".to_string(),
+                description: "a demo package".to_string(),
+            },
+            &project_src,
+        )
+        .unwrap();
+
+        let mut repo = RepoInfo::new();
+        let add = Add {
+            project_name: "demo-pkg".to_string(),
+            kind: AddKind::Build {
+                build: "cargo build --release".to_string(),
+            },
+        };
+        fix_add(&add, &mut repo, &project_src).unwrap();
+
+        let version_info = repo.latest_version("demo-pkg").unwrap();
+        assert_eq!(version_info.version, "0.1.0");
+        match &version_info.kind {
+            PackageKind::Source { build } => {
+                assert_eq!(build, "cargo build --release");
+            }
+            other => panic!("expected PackageKind::Source, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    /// The old `url`/`build` CLI flags used `conflicts_with` to reject
+    /// "both" at parse time but still needed a runtime check for other
+    /// per-variant validation (like the `https://` requirement) inside
+    /// `fix_add` itself. `AddKind::Url` doesn't remove that check — it
+    /// removes the "neither"/"both" states entirely, this test pins down
+    /// that the remaining per-variant validation still runs and fails
+    /// before any network call is attempted.
+    #[test]
+    fn fix_add_url_variant_rejects_non_https_before_any_network_call() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-action-fix-add-url-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+
+        init(
+            &Init {
+                name: "demo-pkg".to_string(),
+                entry: "main.sh".to_string(),
+                ver: "0.1.0".to_string(),
+                description: "a demo package".to_string(),
+            },
+            &project_src,
+        )
+        .unwrap();
+
+        let mut repo = RepoInfo::new();
+        let add = Add {
+            project_name: "demo-pkg".to_string(),
+            kind: AddKind::Url {
+                url: "http://example.com/pkg.zip".to_string(),
+                file_name: None,
+            },
+        };
+        let err = fix_add(&add, &mut repo, &project_src).unwrap_err();
+        assert!(matches!(err, ServerError::ValidationError(_)));
+        assert!(
+            repo.versions_of("demo-pkg").is_err(),
+            "a rejected url must not leave a partial entry in RepoInfo"
         );
 
         std::fs::remove_dir_all(&project_src).ok();

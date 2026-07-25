@@ -212,8 +212,8 @@ sudo rm -rf /opt/com.duacodie/DPM                         # system(需要時)
 | `init <name> <entry> [-v ver] [-d description]`         | 建立套件骨架(`packages/<name>/`,含空的 `entry` 檔、`hashes.json`、`packageInfo.json`)                                           | `just run-server init foo bin/foo -v 0.1.0 -d "my pkg"`         |
 | `hash <packagename>`                                    | 對`packages/<pkg>/` 下所有檔案算 blake3,寫入 `hashes.json`,回填 `packageInfo.json.hash`                                           | `just run-server hash foo`                                      |
 | `build <packagename>`                                   | 把套件打包成`Repo/<pkg>.zip`(本地手動測試用,`Repo/` 已 gitignore,不會被 commit,也不是發布流程的一部分)                              | `just run-server build foo`                                     |
-| `fix add <project_name> --url <URL> [--file-name NAME]` | 發布**Prebuilt** 版本:下載 `--url` 算 blake3 hash,寫進 `RepoInfo.json`(不在本地留檔案副本);`--url` 必須是 `https://`      | `just run-server fix add foo --url https://example.com/foo.zip` |
-| `fix add <project_name> --build <SHELL_CMD>`            | 發布**Source** 版本:把建置指令字串存進 `RepoInfo.json`,client 端 `install` 時才實際執行(見下方 client 說明);與 `--url` 互斥 | `just run-server fix add foo --build "cargo build --release"`   |
+| `fix add <project_name> url <URL> [--file-name NAME]`  | 發布**Prebuilt** 版本:下載 `URL` 算 blake3 hash,寫進 `RepoInfo.json`(不在本地留檔案副本);`URL` 必須是 `https://`       | `just run-server fix add foo url https://example.com/foo.zip`   |
+| `fix add <project_name> build <SHELL_CMD>`              | 發布**Source** 版本:把建置指令字串存進 `RepoInfo.json`,client 端 `install` 時才實際執行(見下方 client 說明)                      | `just run-server fix add foo build "cargo build --release"`     |
 | `fix del <project_name> [version]`                      | 把套件版本從`RepoInfo.json` 移除(已發布版本不可覆寫/修改,只能整版刪除;只有一個版本時 `version` 可省略)                              | `just run-server fix del foo 0.1.0`                             |
 
-典型發布流程:`init` → 把原始碼放進 `packages/<pkg>/` → `hash` → (`--url` 走)自行把打包好的檔案上傳到某個 https 位置 → `fix add ... --url ...`(或直接 `fix add ... --build "..."` 走 Source 流程,不需要上傳檔案)。
+典型發布流程:`init` → 把原始碼放進 `packages/<pkg>/` → `hash` → (`url` 走)自行把打包好的檔案上傳到某個 https 位置 → `fix add ... url ...`(或直接 `fix add ... build "..."` 走 Source 流程,不需要上傳檔案)。`url`/`build` 是 `fix add` 底下的子指令(而非 flag),clap 在解析期就強制「恰好一種」,不會有兩者皆給或皆未給的執行期錯誤。

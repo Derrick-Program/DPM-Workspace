@@ -146,7 +146,7 @@ mod tests {
             Some("pkg.zip".to_string()),
             None,
             "test fixture",
-            "main",
+            Some("main".to_string()),
             None,
         )
     }
