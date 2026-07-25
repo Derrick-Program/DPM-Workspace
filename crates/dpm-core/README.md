@@ -56,7 +56,6 @@
 - `add_package_version`（`server` feature）：新增一個套件版本（拒絕重複版本號）。
 - `remove_package_version`（`server` feature）：移除某套件的特定版本。
 - `fetch_update_repo_info`（`client` feature）：從遠端整包覆蓋索引。
-- `get_package_info`（`client` feature）：取得某套件某版本的完整 `packageInfo.json`。
 
 ### `PackageVersionInfo` / `PackageKind`
 套件的一個發布版本；已發布版本視為不可變。
