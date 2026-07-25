@@ -1,5 +1,6 @@
 mod action;
 mod cli_parse;
+mod error;
 // mod json_parse;
 mod zip_file;
 pub use action::*;
@@ -7,6 +8,7 @@ use anyhow::Result;
 use clap::Parser;
 pub use cli_parse::*;
 use dpm_core::*;
+pub use error::*;
 
 // pub use json_parse::*;
 use std::sync::OnceLock;
