@@ -1,8 +1,0 @@
-{
-  "package_name": "test",
-  "file_name": "main.sh",
-  "version": "0.1.0",
-  "description": "This is a test package",
-  "hash": "1939796de9858e38bab8a990aa8b44be4f5eff1eeef48be4bd5bc744fee3e5a1",
-  "dependencies": null
-}
