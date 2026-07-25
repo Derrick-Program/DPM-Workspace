@@ -22,6 +22,7 @@
 ## Task 1: `dpm-core` 共用 `hash_file`(blake3 取代 sha2)
 
 **Files:**
+
 - Modify: `crates/dpm-core/Cargo.toml`
 - Modify: `crates/dpm-core/src/lib.rs`
 - Modify: `crates/dpm-core/tests/test.rs`
@@ -32,6 +33,7 @@
 - Modify: `Cargo.toml`(根)
 
 **Interfaces:**
+
 - Produces:`pub fn hash_file(path: &Path) -> CoreResult<String>`(`dpm_core` 頂層,無 feature gate,client/server 都能用)。
 - Consumes:無(這個 task 不依賴任何其他未完成的東西)。
 
@@ -240,11 +242,13 @@ EOF
 ## Task 2: tempfile 原子安裝(`dpm` client)
 
 **Files:**
+
 - Modify: `crates/dpm/Cargo.toml`
 - Modify: `crates/dpm/src/utils/db.rs`
 - Modify: `crates/dpm/src/action.rs`
 
 **Interfaces:**
+
 - Consumes:Task 1 的 `dpm_core::hash_file(path: &Path) -> CoreResult<String>`。
 - Produces:`Db::download_file(&self, name: &str, dest_path: &Path) -> ClientResult<()>`(簽名變更,新增 `dest_path` 參數,取代原本寫死 `/tmp`)。
 

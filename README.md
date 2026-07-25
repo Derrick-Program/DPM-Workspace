@@ -34,18 +34,18 @@ DPM_ENV=staging just <recipe>
 
 ### 開發
 
-| 指令 | 說明 |
-|---|---|
-| `just check` | `cargo check --workspace`,快速檢查編譯 |
-| `just build` | `cargo build --workspace`(debug) |
-| `just release` | `cargo build --workspace --release`(開 lto + strip) |
-| `just test` | `cargo test --workspace` |
-| `just test-p <crate>` | 只測單一 crate,例:`just test-p DPM` |
-| `just lint` | `cargo clippy --workspace --all-targets -- -D warnings` |
-| `just lint-fix` | clippy 自動修 |
-| `just fmt` | `cargo fmt --all` |
-| `just fmt-check` | 檢查格式,不修改(CI 用) |
-| `just pre-commit` | `fmt` + `lint` + `test` 一次跑完,commit 前建議先跑這個 |
+| 指令                    | 說明                                                         |
+| ----------------------- | ------------------------------------------------------------ |
+| `just check`          | `cargo check --workspace`,快速檢查編譯                     |
+| `just build`          | `cargo build --workspace`(debug)                           |
+| `just release`        | `cargo build --workspace --release`(開 lto + strip)        |
+| `just test`           | `cargo test --workspace`                                   |
+| `just test-p <crate>` | 只測單一 crate,例:`just test-p DPM`                        |
+| `just lint`           | `cargo clippy --workspace --all-targets -- -D warnings`    |
+| `just lint-fix`       | clippy 自動修                                                |
+| `just fmt`            | `cargo fmt --all`                                          |
+| `just fmt-check`      | 檢查格式,不修改(CI 用)                                       |
+| `just pre-commit`     | `fmt` + `lint` + `test` 一次跑完,commit 前建議先跑這個 |
 
 ### 執行(Client / Server)
 
@@ -58,13 +58,13 @@ just run-server <args>   # cargo run -p DPM-Server -- <args>
 
 ### 文件與維護
 
-| 指令 | 說明 |
-|---|---|
-| `just doc` | `cargo doc --workspace --no-deps --open` |
-| `just clean` | `cargo clean` |
-| `just outdated` | 檢查過期 dependency(需 `cargo-outdated`) |
-| `just audit` | 檢查安全性漏洞(需 `cargo-audit`) |
-| `just update` | 更新 `Cargo.lock` |
+| 指令              | 說明                                       |
+| ----------------- | ------------------------------------------ |
+| `just doc`      | `cargo doc --workspace --no-deps --open` |
+| `just clean`    | `cargo clean`                            |
+| `just outdated` | 檢查過期 dependency(需`cargo-outdated`)  |
+| `just audit`    | 檢查安全性漏洞(需`cargo-audit`)          |
+| `just update`   | 更新`Cargo.lock`                         |
 
 ### 安裝
 
@@ -75,16 +75,16 @@ just install-server   # cargo install --path crates/dpm-server
 
 ### Secrets(Infisical)
 
-| 指令 | 說明 |
-|---|---|
-| `just env-login` | 互動登入(每台機器一次) |
-| `just env-init` | 建立/連結 `.infisical.json`(每個 repo 一次) |
-| `just env-list` | 列出目前 environment 的 secret key(不印值) |
-| `just env-push <dotenv> <env>` | 批次匯入既有 dotenv 檔案到指定 environment |
+| 指令                             | 說明                                         |
+| -------------------------------- | -------------------------------------------- |
+| `just env-login`               | 互動登入(每台機器一次)                       |
+| `just env-init`                | 建立/連結`.infisical.json`(每個 repo 一次) |
+| `just env-list`                | 列出目前 environment 的 secret key(不印值)   |
+| `just env-push <dotenv> <env>` | 批次匯入既有 dotenv 檔案到指定 environment   |
 
 ## Client(`dpm`)使用方式
 
-透過 `just run-client -- <args>` 執行(注意 `--` 是 just 的參數分隔,不是 clap 的)。
+透過 `just run-client <args>` 執行——`run-client` recipe 本身已經是 `cargo run -p DPM -- {{args}}`,呼叫時**不要**再自己加一層 `--`,不然會變成 `cargo run -- -- <args>`,clap 收到的第一個字被誤判成跳脫符號,`-l` 這類 flag 會解析失敗。
 
 ### 安裝 scope:per-user vs system
 
@@ -96,7 +96,7 @@ just install-server   # cargo install --path crates/dpm-server
 加上全域 flag `--system`(或 `-S`)才會切到 **shared 安裝**,路徑固定在 `/opt/com.duacodie/DPM/`,需要 root/sudo(Linux 會自動整進程提權,macOS 逐指令 `sudo`)。`--system` 要放在子指令**之前**:
 
 ```bash
-just run-client -- --system list -l
+just run-client --system list -l
 ```
 
 #### `--system` 的擁有權:Linux vs macOS 不一樣
@@ -112,13 +112,13 @@ just run-client -- --system list -l
 
 `apt`/`dnf` 裝的東西也是同一套 Unix 權限模型,只是把整個標準 Linux 目錄結構當共用樹在用:
 
-| 內容 | 位置 | 擁有者/權限 |
-|---|---|---|
-| 二進位檔 | `/usr/bin`、`/usr/sbin` | `root:root`,`755` |
-| 函式庫 | `/usr/lib`、`/usr/lib/x86_64-linux-gnu` | `root:root`,`755` |
-| 設定檔 | `/etc` | `root:root`,通常 `644` |
-| 套件資料庫 | dpkg:`/var/lib/dpkg/`;rpm(dnf):`/var/lib/rpm/` | `root:root` |
-| 下載快取 | `/var/cache/apt/archives`、`/var/cache/dnf` | `root:root` |
+| 內容       | 位置                                               | 擁有者/權限                |
+| ---------- | -------------------------------------------------- | -------------------------- |
+| 二進位檔   | `/usr/bin`、`/usr/sbin`                        | `root:root`,`755`      |
+| 函式庫     | `/usr/lib`、`/usr/lib/x86_64-linux-gnu`        | `root:root`,`755`      |
+| 設定檔     | `/etc`                                           | `root:root`,通常 `644` |
+| 套件資料庫 | dpkg:`/var/lib/dpkg/`;rpm(dnf):`/var/lib/rpm/` | `root:root`              |
+| 下載快取   | `/var/cache/apt/archives`、`/var/cache/dnf`    | `root:root`              |
 
 要不要 sudo,看操作是不是要**寫**這些 root 擁有的目錄:
 
@@ -131,18 +131,18 @@ just run-client -- --system list -l
 
 ### 子指令
 
-| 子指令 | 別名 | 說明 | 範例 |
-|---|---|---|---|
-| `install <name...>` | `i`, `add`, `inst` | 安裝套件(先查本地索引,沒有就交給系統套件管理員) | `just run-client -- install foo` |
-| `update` | `ud`, `upda`, `up` | 從遠端 repo 更新本地套件索引 | `just run-client -- update` |
-| `uninstall <name...>` | `un`, `i!`, `unin` | 移除套件 | `just run-client -- uninstall foo` |
-| `search <name...>` | `s`, `se`, `sea` | 搜尋套件 | `just run-client -- search foo` |
-| `list [-l\|--list] [-s\|--list-sys]` | `l`, `li`, `ll` | 列出套件(`-l` 已安裝、`-s` 系統套件管理員已安裝) | `just run-client -- list -l` |
-| `upgrade <name...>` | `U`, `UP`, `grade` | 升級套件 | `just run-client -- upgrade foo` |
-| `upgradeSelf` | `US`, `UPS`, `grades` | 升級 dpm 自己 | `just run-client -- upgradeSelf` |
-| `source add <URL> [--as ALIAS]` | - | 新增套件來源(repo_url 需為 git 可 clone 的遠端;alias 預設取 URL host) | `just run-client -- source add https://github.com/org/repo --as myrepo` |
-| `source remove <ALIAS>` | - | 移除套件來源(連同該 source 在本地 DB 的所有套件紀錄) | `just run-client -- source remove myrepo` |
-| `source list` | - | 列出目前設定的所有套件來源 | `just run-client -- source list` |
+| 子指令                               | 別名                        | 說明                                                                  | 範例                                                                      |
+| ------------------------------------ | --------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `install <name...>`                | `i`, `add`, `inst`    | 安裝套件(先查本地索引,沒有就交給系統套件管理員)                       | `just run-client install foo`                                        |
+| `update`                           | `ud`, `upda`, `up`    | 從遠端 repo 更新本地套件索引                                          | `just run-client update`                                             |
+| `uninstall <name...>`              | `un`, `i!`, `unin`    | 移除套件                                                              | `just run-client uninstall foo`                                      |
+| `search <name...>`                 | `s`, `se`, `sea`      | 搜尋套件                                                              | `just run-client search foo`                                         |
+| `list [-l\|--list] [-s\|--list-sys]` | `l`, `li`, `ll`       | 列出套件(`-l` 已安裝、`-s` 系統套件管理員已安裝)                  | `just run-client list -l`                                            |
+| `upgrade <name...>`                | `U`, `UP`, `grade`    | 升級套件                                                              | `just run-client upgrade foo`                                        |
+| `upgradeSelf`                      | `US`, `UPS`, `grades` | 升級 dpm 自己                                                         | `just run-client upgradeSelf`                                        |
+| `source add <URL> [--as ALIAS]`    | -                           | 新增套件來源(repo_url 需為 git 可 clone 的遠端;alias 預設取 URL host) | `just run-client source add https://github.com/org/repo --as myrepo` |
+| `source remove <ALIAS>`            | -                           | 移除套件來源(連同該 source 在本地 DB 的所有套件紀錄)                  | `just run-client source remove myrepo`                               |
+| `source list`                      | -                           | 列出目前設定的所有套件來源                                            | `just run-client source list`                                        |
 
 大部分子指令都吃 `-v`/`--verbose`。全域還有 `-g`/`--gen <shell>` 產生 shell 自動完成腳本。
 
@@ -169,12 +169,15 @@ just run-client -- --system list -l
 - **Source**:`install` 會先用 `git2` shallow clone 該 source 的 `repo_url`,再對 `packages/<pkg>/` 這個子目錄執行 `RepoInfo.json` 裡記錄的 `build` 指令(等同 shell 執行任意字串,概念上跟 AUR PKGBUILD 一樣是信任該 source 才能用)。
 
   執行前會印警告:
+
   ```
   Warning: installing a source package from a third-party source, not vetted by the DPM team
   ```
+
   （`official` source 例外,不印。）
 
   安全性細節(`--system` 模式下適用,Linux):
+
   - build 指令一律透過 `drop_privileges_for_build` 丟棄 root 權限後才執行(讀 `SUDO_UID`/`SUDO_GID`,`setgroups`→`setgid`→`setuid`;解不到就直接報錯,不會靜默用 root 跑)
   - clone/build 用的暫存目錄跑完會 `chown` 回呼叫 `sudo` 的原始使用者
   - build 完成後要 symlink 的 `entry` 路徑會做 path-safety 檢查(拒絕絕對路徑、`..`,並用 canonicalize 確認實際落在 install 目錄內,防 symlink 逃逸)
@@ -185,11 +188,11 @@ just run-client -- --system list -l
 
 ```bash
 # per-user,預設,不用 sudo
-just run-client -- list -l
+just run-client list -l
 ls -la ~/Library/Application\ Support/com.duacodie.dpm/   # 確認建在自己家目錄下
 
 # system,會跳 sudo 密碼
-just run-client -- --system list -l
+just run-client --system list -l
 sudo ls -la /opt/com.duacodie/DPM/   # 確認擁有者是 root(Linux)或 user:admin(macOS)
 ```
 
@@ -202,15 +205,15 @@ sudo rm -rf /opt/com.duacodie/DPM                         # system(需要時)
 
 ## Server(`dpm-server`)使用方式
 
-透過 `just run-server -- <args>` 執行,在 repo 根目錄操作套件索引。套件原始碼放在 `packages/<name>/`(不是 `Repo/src/`,那是舊路徑,已改掉),索引檔是根目錄的 `RepoInfo.json`。
+透過 `just run-server <args>` 執行,在 repo 根目錄操作套件索引。套件原始碼放在 `packages/<name>/`(不是 `Repo/src/`,那是舊路徑,已改掉),索引檔是根目錄的 `RepoInfo.json`。
 
-| 子指令 | 說明 | 範例 |
-|---|---|---|
-| `init <name> <entry> [-v ver] [-d description]` | 建立套件骨架(`packages/<name>/`,含空的 `entry` 檔、`hashes.json`、`packageInfo.json`) | `just run-server -- init foo bin/foo -v 0.1.0 -d "my pkg"` |
-| `hash <packagename>` | 對 `packages/<pkg>/` 下所有檔案算 blake3,寫入 `hashes.json`,回填 `packageInfo.json.hash` | `just run-server -- hash foo` |
-| `build <packagename>` | 把套件打包成 `Repo/<pkg>.zip`(本地手動測試用,`Repo/` 已 gitignore,不會被 commit,也不是發布流程的一部分) | `just run-server -- build foo` |
-| `fix add <project_name> --url <URL> [--file-name NAME]` | 發布 **Prebuilt** 版本:下載 `--url` 算 blake3 hash,寫進 `RepoInfo.json`(不在本地留檔案副本);`--url` 必須是 `https://` | `just run-server -- fix add foo --url https://example.com/foo.zip` |
-| `fix add <project_name> --build <SHELL_CMD>` | 發布 **Source** 版本:把建置指令字串存進 `RepoInfo.json`,client 端 `install` 時才實際執行(見下方 client 說明);與 `--url` 互斥 | `just run-server -- fix add foo --build "cargo build --release"` |
-| `fix del <project_name> [version]` | 把套件版本從 `RepoInfo.json` 移除(已發布版本不可覆寫/修改,只能整版刪除;只有一個版本時 `version` 可省略) | `just run-server -- fix del foo 0.1.0` |
+| 子指令                                                    | 說明                                                                                                                                    | 範例                                                                 |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `init <name> <entry> [-v ver] [-d description]`         | 建立套件骨架(`packages/<name>/`,含空的 `entry` 檔、`hashes.json`、`packageInfo.json`)                                           | `just run-server init foo bin/foo -v 0.1.0 -d "my pkg"`         |
+| `hash <packagename>`                                    | 對`packages/<pkg>/` 下所有檔案算 blake3,寫入 `hashes.json`,回填 `packageInfo.json.hash`                                           | `just run-server hash foo`                                      |
+| `build <packagename>`                                   | 把套件打包成`Repo/<pkg>.zip`(本地手動測試用,`Repo/` 已 gitignore,不會被 commit,也不是發布流程的一部分)                              | `just run-server build foo`                                     |
+| `fix add <project_name> --url <URL> [--file-name NAME]` | 發布**Prebuilt** 版本:下載 `--url` 算 blake3 hash,寫進 `RepoInfo.json`(不在本地留檔案副本);`--url` 必須是 `https://`      | `just run-server fix add foo --url https://example.com/foo.zip` |
+| `fix add <project_name> --build <SHELL_CMD>`            | 發布**Source** 版本:把建置指令字串存進 `RepoInfo.json`,client 端 `install` 時才實際執行(見下方 client 說明);與 `--url` 互斥 | `just run-server fix add foo --build "cargo build --release"`   |
+| `fix del <project_name> [version]`                      | 把套件版本從`RepoInfo.json` 移除(已發布版本不可覆寫/修改,只能整版刪除;只有一個版本時 `version` 可省略)                              | `just run-server fix del foo 0.1.0`                             |
 
 典型發布流程:`init` → 把原始碼放進 `packages/<pkg>/` → `hash` → (`--url` 走)自行把打包好的檔案上傳到某個 https 位置 → `fix add ... --url ...`(或直接 `fix add ... --build "..."` 走 Source 流程,不需要上傳檔案)。

@@ -4,7 +4,7 @@
 # 預設用 dev environment,可用 DPM_ENV=staging just <recipe> 覆寫。
 
 env := env_var_or_default("DPM_ENV", "dev")
-export MACOSX_DEPLOYMENT_TARGET := if os() == "macos" { "13.4" } else { "" }
+export MACOSX_DEPLOYMENT_TARGET := if os() == "macos" { `sw_vers -productVersion` } else { "" }
 export RUSTFLAGS := if os() == "macos" { "-C link-arg=-Wl,-no_fixup_chains" } else { "" }
 
 # 預設顯示可用指令
