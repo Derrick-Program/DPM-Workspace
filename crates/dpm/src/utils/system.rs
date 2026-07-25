@@ -117,8 +117,7 @@ impl SystemController {
             let default_setting = Setting {
                 sources: vec![Source {
                     alias: "official".to_string(),
-                    repo_url: "https://github.com/Derrick-Program/DPM-Server/tree/main/Repo"
-                        .to_string(),
+                    repo_url: "https://github.com/Derrick-Program/DPM-Server".to_string(),
                     repo_info:
                         "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/RepoInfo.json"
                             .to_string(),

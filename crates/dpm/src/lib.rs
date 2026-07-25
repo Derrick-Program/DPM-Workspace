@@ -9,6 +9,9 @@ use std::sync::OnceLock;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Source {
     pub alias: String,
+    /// Git-clonable remote URL (e.g. `https://github.com/owner/repo`) — this
+    /// source's own repo, where `packages/<pkg>/` lives for source-kind
+    /// installs. Must be a real clone target, not a human-facing web page.
     pub repo_url: String,
     pub repo_info: String,
 }
