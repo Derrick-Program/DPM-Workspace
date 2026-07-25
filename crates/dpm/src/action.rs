@@ -1,7 +1,7 @@
 use std::{
     fs::{self, remove_dir_all, remove_file, Permissions},
     os::unix::fs::PermissionsExt,
-    path::Path,
+    path::{Component, Path},
 };
 
 use crate::{
@@ -158,6 +158,12 @@ impl ActionInfo {
                     println!("  {}", "Installed!".green());
                     println!("  {}", "Create Links ...".yellow());
                 }
+                if !entry_is_safe(&package_info.file_name) {
+                    return Err(ClientError::Core(CoreError::InvalidPackage(format!(
+                        "{pkg} has an unsafe entry path: {}",
+                        package_info.file_name
+                    ))));
+                }
                 let main_file = install_path.join(&package_info.file_name);
                 let ln_path = BIN_DIR.get().unwrap().join(pkg);
                 fs::set_permissions(&main_file, Permissions::from_mode(0o755))
@@ -233,11 +239,14 @@ impl ActionInfo {
                 "Building (running an untrusted build command)...".yellow()
             );
         }
-        let status = std::process::Command::new("sh")
+        let mut build_cmd = std::process::Command::new("sh");
+        build_cmd
             .arg("-c")
             .arg(&build_command)
             .current_dir(&package_src)
-            .env("OUT", &out_dir)
+            .env("OUT", &out_dir);
+        drop_privileges_for_build(&mut build_cmd)?;
+        let status = build_cmd
             .status()
             .map_err(|e| ClientError::SystemError(format!("failed to run build command: {e}")))?;
         if !status.success() {
@@ -250,6 +259,12 @@ impl ActionInfo {
         swap_into_install_dir(&out_dir, &install_path, staging.path())?;
 
         if !repo_package_info.entry.is_empty() {
+            if !entry_is_safe(&repo_package_info.entry) {
+                return Err(ClientError::Core(CoreError::InvalidPackage(format!(
+                    "{pkg} has an unsafe entry path: {}",
+                    repo_package_info.entry
+                ))));
+            }
             let main_file = install_path.join(&repo_package_info.entry);
             let ln_path = BIN_DIR.get().unwrap().join(pkg);
             fs::set_permissions(&main_file, Permissions::from_mode(0o755))
@@ -514,6 +529,83 @@ fn swap_into_install_dir(
     Ok(())
 }
 
+/// 判斷一個從(可能未受信任的)套件索引拿到的 entry/file_name 相對路徑,
+/// 是否會在跟 `install_path` join 之後逃逸出 install_path 之外。
+/// `PathBuf::join` 遇到絕對路徑會直接整個取代 base(這是文件化行為,不是
+/// bug),所以只要 entry 是絕對路徑,或含有 `..` component,就一律視為不安全
+/// ——不需要等到檔案系統上真的存在才能判斷,也不需要 canonicalize。
+fn entry_is_safe(entry: &str) -> bool {
+    let path = Path::new(entry);
+    !path.is_absolute() && !path.components().any(|c| matches!(c, Component::ParentDir))
+}
+
+/// 把即將執行 build_command 的子行程,在 fork 之後、exec 之前從 root drop
+/// 回原本呼叫 `sudo`(Linux `--system`)的那個使用者,避免「整個 process 已經
+/// 是 root,build_command 就跟著是 root」——`system_command_runner` 沒被
+/// 呼叫只能防住額外的 `sudo` 前綴,防不了本來就是 root 的父行程。
+/// 只有 Linux 需要:macOS 的 `--system` 是逐指令 sudo,呼叫這個函式的
+/// process 本身從來不會是 root。
+#[cfg(target_os = "linux")]
+fn drop_privileges_for_build(cmd: &mut std::process::Command) -> ClientResult<()> {
+    use std::os::unix::process::CommandExt;
+
+    if unsafe { libc::getuid() } != 0 {
+        // 不是 root(PerUser scope,或非 sudo 直接以一般使用者執行),
+        // build_command 本來就不會以 root 執行,不需要 drop。
+        return Ok(());
+    }
+
+    let uid: libc::uid_t = std::env::var("SUDO_UID")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| {
+            ClientError::SystemError(
+                "refusing to run an untrusted build command as root: process is running as \
+                 root but SUDO_UID is not set/parseable, so there is no non-root user to drop \
+                 privileges to"
+                    .to_string(),
+            )
+        })?;
+    let gid: libc::gid_t = std::env::var("SUDO_GID")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| {
+            ClientError::SystemError(
+                "refusing to run an untrusted build command as root: process is running as \
+                 root but SUDO_GID is not set/parseable, so there is no non-root group to drop \
+                 privileges to"
+                    .to_string(),
+            )
+        })?;
+
+    // Safety: the closure only calls async-signal-safe libc functions
+    // (setgid/setuid) and returns before doing anything else; this matches
+    // the documented safety contract of `pre_exec`.
+    unsafe {
+        cmd.pre_exec(move || {
+            // GID before UID: dropping UID first can leave us unprivileged to
+            // change GID afterward (standard Unix privilege-drop ordering).
+            if libc::setgid(gid) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::setuid(uid) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn drop_privileges_for_build(_cmd: &mut std::process::Command) -> ClientResult<()> {
+    // ponytail: macOS `--system` is per-command sudo, never whole-process
+    // elevation, so the parent (and thus this build child) is never root
+    // here — nothing to drop. Revisit only if macOS ever gains a
+    // whole-process elevation mode.
+    Ok(())
+}
+
 #[cfg(test)]
 mod atomic_install_tests {
     use super::swap_into_install_dir;
@@ -669,5 +761,36 @@ mod atomic_install_tests {
             "the backed-up old install must still be sitting in staging_root/previous \
              (unrestored) since the rollback rename failed"
         );
+    }
+}
+
+#[cfg(test)]
+mod entry_is_safe_tests {
+    use super::entry_is_safe;
+
+    #[test]
+    fn rejects_absolute_path() {
+        assert!(!entry_is_safe("/etc/cron.d/x"));
+    }
+
+    #[test]
+    fn rejects_parent_dir_traversal() {
+        assert!(!entry_is_safe("../../../etc/passwd"));
+        assert!(!entry_is_safe("bin/../../escape"));
+    }
+
+    #[test]
+    fn accepts_normal_relative_filename() {
+        assert!(entry_is_safe("bin/main"));
+        assert!(entry_is_safe("main"));
+        assert!(entry_is_safe("./main"));
+    }
+
+    #[test]
+    fn rejects_empty_string_is_still_safe_but_caller_checks_empty_separately() {
+        // entry_is_safe itself doesn't special-case "": the `.is_empty()`
+        // check happens at the call sites before this is even invoked.
+        // Document that here so nobody "fixes" this later.
+        assert!(entry_is_safe(""));
     }
 }
