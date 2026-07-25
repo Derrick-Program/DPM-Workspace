@@ -45,10 +45,7 @@ impl ActionInfo {
     /// OS package manager) — same split as before, just keyed off the
     /// parsed bare `name` instead of the raw spec string, since a spec like
     /// `official/foo@^1.0` will never literally equal a DB `name` column.
-    fn parse_mine(
-        &self,
-        all_packages: &[DbPackage],
-    ) -> (Vec<ParsedInstallSpec>, Vec<String>) {
+    fn parse_mine(&self, all_packages: &[DbPackage]) -> (Vec<ParsedInstallSpec>, Vec<String>) {
         let mut is = Vec::new();
         let mut isnot = Vec::new();
         for raw in &self.pkgs {
