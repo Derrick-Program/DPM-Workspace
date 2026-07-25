@@ -6,6 +6,7 @@
 env := env_var_or_default("DPM_ENV", "dev")
 export MACOSX_DEPLOYMENT_TARGET := if os() == "macos" { `sw_vers -productVersion` } else { "" }
 export RUSTFLAGS := if os() == "macos" { "-C link-arg=-Wl,-no_fixup_chains" } else { "" }
+sed_inplace := if os() == "macos" { "sed -i ''" } else { "sed -i" }
 
 # 預設顯示可用指令
 default:
@@ -51,6 +52,33 @@ fmt-check:
 
 # 提交前檢查: 格式 + clippy + 測試
 pre-commit: fmt lint test
+
+# 顯示目前 workspace 版本(三個 crate 都用 version.workspace = true 共用這一份,定義在根 Cargo.toml 的 [workspace.package])
+version:
+    @grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2
+
+# 改 workspace 版本,三個 crate 自動跟著變(因為都是 version.workspace = true),例: just version-set 0.2.0
+version-set new_version:
+    {{sed_inplace}} 's/^version = ".*"/version = "{{new_version}}"/' Cargo.toml
+    infisical run --env={{env}} --path=/ --command="cargo check --workspace --quiet"
+    @echo "版本已改成 {{new_version}}"
+
+# 顯示所有 git tag(新到舊),方便看目前版本有沒有已經打過 tag
+tags:
+    @git tag --sort=-v:refname
+
+# 讀根 Cargo.toml 的版本,幫目前 commit 打上對應的 vX.Y.Z annotated tag(只在本地建立,不會自動 push)
+tag-release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ver=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+    tag="v${ver}"
+    if git rev-parse "$tag" >/dev/null 2>&1; then
+        echo "tag $tag 已經存在——先 just version-set 改版本,或手動刪掉舊 tag 再重跑" >&2
+        exit 1
+    fi
+    git tag -a "$tag" -m "Release $tag"
+    echo "已建立本地 tag $tag,推上去執行: git push origin $tag"
 
 # ── 執行 ────────────────────────────────────────────
 

@@ -8,6 +8,26 @@ use std::{
     path::Path,
     process::{Command, Stdio},
 };
+/// 「官方」套件來源的預設 git repo 位址——之後這個 workspace 要是搬到別的
+/// GitHub 帳號/repo,只需要改這一行(注意:這是 client 預設拉套件索引的來源,
+/// 跟 workspace 原始碼本身的 repo——見根 `Cargo.toml` 的 `[workspace.package]
+/// repository`——是兩件事,可能指向不同的 repo)。`repo_info`(RepoInfo.json 的
+/// raw content URL)從這裡自動推導,不需要另外維護第二份字串跟著手動同步。
+const OFFICIAL_REPO_URL: &str = "https://github.com/Derrick-Program/DPM-Server";
+
+/// 把 `https://github.com/<owner>/<repo>` 轉成該 repo 在 `main` 分支上
+/// `RepoInfo.json` 的 raw content URL。
+fn official_repo_info_url(repo_url: &str) -> String {
+    format!(
+        "{}/main/RepoInfo.json",
+        repo_url.replacen(
+            "https://github.com/",
+            "https://raw.githubusercontent.com/",
+            1
+        )
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PackageManager {
     Apt,
@@ -250,10 +270,8 @@ impl SystemController {
             let default_setting = Setting {
                 sources: vec![Source {
                     alias: "official".to_string(),
-                    repo_url: "https://github.com/Derrick-Program/DPM-Server".to_string(),
-                    repo_info:
-                        "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/RepoInfo.json"
-                            .to_string(),
+                    repo_url: OFFICIAL_REPO_URL.to_string(),
+                    repo_info: official_repo_info_url(OFFICIAL_REPO_URL),
                 }],
             };
             JsonStorage::to_json(&default_setting, &config_path)?;
@@ -420,5 +438,13 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn official_repo_info_url_derives_raw_content_url_from_repo_url() {
+        assert_eq!(
+            official_repo_info_url("https://github.com/Derrick-Program/DPM-Server"),
+            "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/RepoInfo.json"
+        );
     }
 }

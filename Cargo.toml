@@ -3,10 +3,13 @@ resolver = "2"
 members = ["crates/dpm", "crates/dpm-server", "crates/dpm-core"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 authors = ["Derrick Lin"]
 license = "MIT OR Apache-2.0"
+# Workspace 之後可能整個搬到別的 GitHub 帳號/repo,所以來源網址只在這裡定義一次,
+# 三個 crate 的 Cargo.toml 都用 repository.workspace = true 繼承,不要各自硬編。
+repository = "https://github.com/Derrick-Program/DPM-Workspace"
 
 [workspace.dependencies]
 DPM-Core = { path = "crates/dpm-core" }

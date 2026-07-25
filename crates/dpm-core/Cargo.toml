@@ -1,12 +1,12 @@
 [package]
 name = "DPM-Core"
-version = "0.1.2"
+version.workspace = true
 edition.workspace = true
 authors.workspace = true
 description = "DPM-Core is for DPM-Server & DPM-Client."
 license = "Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/Derrick-Program/DPM-Core"
+repository.workspace = true
 documentation = "https://docs.rs/dpm_core"
 keywords = ["dpm", "repo", "Core", "self", "system"]
 categories = ["command-line-utilities"]

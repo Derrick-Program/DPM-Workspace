@@ -15,6 +15,7 @@ crates/
 
 - 共用 dependency 版本統一放在根 `Cargo.toml` 的 `[workspace.dependencies]`,crate 內用 `xxx.workspace = true`。
 - `DPM-Core` 以 path 依賴,不再走 git dependency。
+- 三個 crate 的 `version`/`repository` 都統一收在根 `Cargo.toml` 的 `[workspace.package]`,各自 `Cargo.toml` 用 `version.workspace = true`/`repository.workspace = true` 繼承,不要各自寫死(`dpm-core` 以前版本號脫鉤成 `0.1.2`,已經統一)——根 `Cargo.toml` 的 `version` 是唯一版本來源。改版本用 `just version`(查看)/`just version-set <ver>`(改,自動同步三個 crate + 跑 `cargo check` 刷新 lock)。`repository` 指向這個 workspace 原始碼本身的 repo——之後整包搬到別的 GitHub 帳號,只改這一行。發 release 用 `just tags`(列出目前所有 git tag,新到舊)+ `just tag-release`(讀 `Cargo.toml` 版本,幫目前 commit 打上 `vX.Y.Z` annotated tag;只在本地建立,不會自動 push,tag 已存在會直接報錯而不是覆蓋——推上去要自己手動 `git push origin vX.Y.Z`)。
 
 ## 架構重點
 
@@ -28,6 +29,7 @@ crates/
 - **共用實作收斂到 dpm-core**:`zip_folder`/`unzip_file`/`read_file_from_zip`(`dpm-core/src/zip_file.rs`)、blake3 `hash_file()`、`get_styles()`(clap 配色主題)、`PackageKind::to_db_fields`/`from_db_fields`(扁平化存進 `LocalRepo` 的 `kind`/`url`/`hash`/`filename`/`build_command` 欄位跟 `PackageKind` 互轉,呼叫端不用自己比對 `"source"`/`"prebuilt"` 字串)都只有一份實作,client/server 兩邊都呼叫同一份。
 - **`db.rs::Db` 的方法只留有人用的**:`insert`/`read_all`/`read_one`/`clear_table_for_source` 是實際被呼叫的路徑。`delete`/`versions_of`/`sources_of`/`latest_version` 目前沒有 production 呼叫端,但有測試覆蓋,標成 ponytail 註解保留(之後 per-version 移除、多版本列表、來源消歧等指令會用到);`drop_table`/`clear_table`/`execute_query` 是真正零呼叫端的死碼,已刪除。
 - **`system.rs` 跟 `action.rs` 是單向依賴**:`SystemController::init` 只做 OS bootstrap(mkdir、permission check、寫預設 `config.json`),回傳 `(Setting, bool)`,`bool` 是「這次是不是第一次執行」。第一次執行要 seed 初始 source 索引的邏輯,由 `lib.rs::entry()`(呼叫 `ActionInfo::init_update`)負責,不是 `system.rs`——`system.rs` 因此不再 import `ActionInfo`,只有 `action.rs`(建構 `SystemController`)依賴 `system.rs`,不是反過來雙向依賴。
+- **預設「官方」套件來源可以一行改掉**:`system.rs::OFFICIAL_REPO_URL` 是 client 第一次執行時寫進 `config.json` 的預設 source(`repo_info` 用 `official_repo_info_url()` 從這個 URL 自動推導,不是另外手寫第二份字串)。這是 client 拉套件索引的來源,跟上面 workspace 原始碼本身的 `repository` 是兩個不同的 repo,搬 registry 只改這一個常數,不影響 workspace 原始碼的 repo 位置。
 
 ## 已知待處理問題
 
@@ -37,7 +39,7 @@ crates/
 
 ## 常用指令
 
-一律用 `just`(見 `justfile`):`just check`、`just test`、`just lint`、`just run-client <args>`、`just run-server <args>`。
+一律用 `just`(見 `justfile`):`just check`、`just test`、`just lint`、`just run-client <args>`、`just run-server <args>`、`just version`(查看目前版本)、`just version-set <ver>`(改版本)、`just tags`(列出 git tag)、`just tag-release`(依 `Cargo.toml` 版本打本地 tag)。
 
 ## Superpowers spec-driven workflow
 
