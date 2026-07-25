@@ -48,7 +48,12 @@ mod tests {
 
         let mut index = repo.index().unwrap();
         index
-            .add_path(Path::new("packages").join(package_name).join("packageInfo.json").as_path())
+            .add_path(
+                Path::new("packages")
+                    .join(package_name)
+                    .join("packageInfo.json")
+                    .as_path(),
+            )
             .unwrap();
         index.write().unwrap();
         let tree_id = index.write_tree().unwrap();
@@ -89,6 +94,9 @@ mod tests {
             &dest.path().join("clone"),
         );
 
-        assert!(result.is_err(), "demo-pkg was never added to the source repo");
+        assert!(
+            result.is_err(),
+            "demo-pkg was never added to the source repo"
+        );
     }
 }
