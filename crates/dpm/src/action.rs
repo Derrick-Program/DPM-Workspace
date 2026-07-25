@@ -13,6 +13,13 @@ use colored::Colorize;
 use dpm_core::CoreError;
 use dpm_core::{Dependency, JsonStorage, PackageInfo, PackageKind, RepoInfo};
 use walkdir::WalkDir;
+
+/// `(source_hint, name, constraint)` — one parsed `[source/]name[@constraint]`
+/// CLI argument, as produced by `parse_package_spec` and consumed by
+/// `resolve_install_set`. Named to keep `parse_mine`'s return type under
+/// clippy's `type_complexity` threshold.
+type ParsedInstallSpec = (Option<String>, String, Option<String>);
+
 #[derive(Debug)]
 pub struct ActionInfo {
     pub pkgs: Vec<String>,
@@ -41,7 +48,7 @@ impl ActionInfo {
     fn parse_mine(
         &self,
         all_packages: &[DbPackage],
-    ) -> (Vec<(Option<String>, String, Option<String>)>, Vec<String>) {
+    ) -> (Vec<ParsedInstallSpec>, Vec<String>) {
         let mut is = Vec::new();
         let mut isnot = Vec::new();
         for raw in &self.pkgs {
@@ -89,7 +96,7 @@ impl ActionInfo {
                     .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
 
                 if repo_package_info.kind == "source" {
-                    self.install_source_package(pkg, &source_alias, &repo_package_info, &staging)?;
+                    self.install_source_package(pkg, &source_alias, repo_package_info, &staging)?;
                     if self.verbose {
                         println!("  {}", "Installed!".green());
                     }
