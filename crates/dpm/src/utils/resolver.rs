@@ -40,11 +40,29 @@ pub fn parse_version(s: &str) -> ClientResult<SemanticVersion> {
 /// rather than a hand-rolled parser, then each comparator is converted to an
 /// interval and all comparators are intersected (matching `VersionReq`'s own
 /// "all comparators must hold" semantics for a comma-separated list).
+///
+/// One deliberate deviation from raw `VersionReq` semantics: `VersionReq`
+/// treats a bare, unprefixed version (`"1.2.3"`) as `^1.2.3` (Cargo.toml's
+/// own convention — indistinguishable from an explicit `^` once parsed,
+/// since both produce `Op::Caret`). dpm instead follows the `pkg@version`
+/// CLI convention (as in `npm install pkg@1.2.3`): a bare digits-and-dots
+/// string pins exactly that version (or prefix-range for a partial version
+/// like `"1.2"`, meaning "any 1.2.x"). This is done by rewriting a bare
+/// version to an explicit `=`-prefixed one before parsing, so it reuses the
+/// existing `Op::Exact` handling in `comparator_to_range` rather than a
+/// separate code path.
 pub fn parse_constraint(s: &str) -> ClientResult<Ranges<SemanticVersion>> {
     let s = s.trim();
     if s.is_empty() || s == "*" {
         return Ok(Ranges::full());
     }
+    let rewritten;
+    let s = if s.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        rewritten = format!("={s}");
+        rewritten.as_str()
+    } else {
+        s
+    };
     let req = VersionReq::parse(s).map_err(|e| {
         ClientError::Core(CoreError::DependencyError(format!(
             "invalid version constraint '{s}': {e}"
