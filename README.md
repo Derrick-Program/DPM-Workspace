@@ -148,6 +148,19 @@ just run-client -- --system list -l
 
 `install <name>` 支援單純套件名(不用 `source/name` 語法):本地索引裡該名字只在一個 source 有 → 自動選用;不存在 → `PackageNotFound`;存在於多個 source → `AmbiguousPackage`,需先 `source remove` 掉不要的來源再重試。
 
+### 相依解析(pubgrub)
+
+`install` 支援 `[source/]name[@constraint]` 語法(比照 npm):
+
+- `dpm install foo` —— 名字沒指定來源,跟之前一樣走 0/1/2+ 來源數規則自動解析或報錯
+- `dpm install official/foo` —— 明確指定來源
+- `dpm install foo@^1.2` —— 版本約束,`^`/`~`/比較運算子沿用 Cargo 風格語意(`^1.2.3`、`~1.2.3`、`>=1.0.0, <2.0.0`);裸版號(`1.2.3`,沒有任何前綴)是 **npm 風格的精確釘版本**,不是 Cargo.toml 那種「裸版號等於 `^`」——因為 `1.2.3`/`^1.2.3` 在 `semver::VersionReq` 解析後都是同一個 `Op::Caret`,無法事後分辨,dpm 在丟進 `VersionReq` 前就把純數字+點的裸字串改寫成 `=1.2.3` 明確精確比對。不寫約束預設 `*`(任何版本)。
+- `dpm install official/foo@^1.2` —— 來源 + 約束一起寫
+
+一次 `install` 裝多個套件時,所有套件(以及它們各自的 `dependencies`)會一起丟給 `pubgrub` 做**聯合求解**——不是每個套件獨立挑「目前最新版」,而是在滿足全部套件、全部相依限制的前提下,每個套件仍然挑得到的最新版本。任兩個套件的相依限制衝突(例如 A 需要 `lib@^2.0`、B 需要 `lib@^1.0`)會直接報錯並印出 `pubgrub` 產生的衝突鏈說明,不會裝一半。
+
+已知限制:套件的 `dependencies` 欄位只有 `name`+版本約束,没有 `source` 欄位——如果某個相依名稱同時存在於多個來源,現在無法在該相依關係裡指定要哪個來源,會直接報 `AmbiguousPackage`(跟 CLI 上裝到同名衝突套件的報錯規則一致)。`upgrade`/`uninstall`/`search` 目前還是吃純套件名,沒有 `source/name@constraint` 語法。
+
 ### 套件種類:Prebuilt vs Source
 
 `update` 拉回來的索引裡,每個版本是 `Prebuilt`(預編譯檔案,下載後直接安裝)或 `Source`(需要本地 clone + 執行 build command)兩種之一:
