@@ -102,7 +102,12 @@ impl ActionInfo {
                 })?;
                 let download_path = staging.path().join(&filename);
                 get_db()
-                    .download_file(&source_alias, pkg, &repo_package_info.version, &download_path)
+                    .download_file(
+                        &source_alias,
+                        pkg,
+                        &repo_package_info.version,
+                        &download_path,
+                    )
                     .await
                     .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?;
                 if self.verbose {
@@ -165,6 +170,7 @@ impl ActionInfo {
                     ))));
                 }
                 let main_file = install_path.join(&package_info.file_name);
+                entry_resolves_inside_install_dir(pkg, &main_file, &install_path)?;
                 let ln_path = BIN_DIR.get().unwrap().join(pkg);
                 fs::set_permissions(&main_file, Permissions::from_mode(0o755))
                     .map_err(|e| ClientError::SystemError(e.to_string()))?;
@@ -266,6 +272,7 @@ impl ActionInfo {
                 ))));
             }
             let main_file = install_path.join(&repo_package_info.entry);
+            entry_resolves_inside_install_dir(pkg, &main_file, &install_path)?;
             let ln_path = BIN_DIR.get().unwrap().join(pkg);
             fs::set_permissions(&main_file, Permissions::from_mode(0o755))
                 .map_err(|e| ClientError::SystemError(e.to_string()))?;
@@ -539,6 +546,31 @@ fn entry_is_safe(entry: &str) -> bool {
     !path.is_absolute() && !path.components().any(|c| matches!(c, Component::ParentDir))
 }
 
+/// `entry_is_safe` 只擋得住路徑「字串」裡的絕對路徑/`..`,擋不住
+/// `install_path` 底下真的有個 symlink 指到外面——`out_dir`(source 安裝)或
+/// 解壓出來的內容(prebuilt 安裝)都是 build_command/發佈者可控的,可以放一個
+/// `entry` 指向的 symlink 指到任意路徑(例如 `/etc/shadow`)。呼叫這個函式時
+/// `swap_into_install_dir` 一定已經跑完,`install_path` 已經在檔案系統上存在,
+/// 所以在把 `main_file` 交給 `fs::set_permissions`(等同 `chmod`,會跟隨
+/// symlink)之前,canonicalize 兩邊、確認解完符號連結後 `main_file` 仍然落在
+/// `install_path` 底下——這是額外的一層檢查,不是取代 `entry_is_safe`。
+fn entry_resolves_inside_install_dir(
+    pkg: &str,
+    main_file: &Path,
+    install_path: &Path,
+) -> ClientResult<()> {
+    let canonical_install = std::fs::canonicalize(install_path)
+        .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+    let canonical_main_file =
+        std::fs::canonicalize(main_file).map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+    if !canonical_main_file.starts_with(&canonical_install) {
+        return Err(ClientError::Core(CoreError::InvalidPackage(format!(
+            "{pkg}'s entry resolves outside the install directory"
+        ))));
+    }
+    Ok(())
+}
+
 /// 把即將執行 build_command 的子行程,在 fork 之後、exec 之前從 root drop
 /// 回原本呼叫 `sudo`(Linux `--system`)的那個使用者,避免「整個 process 已經
 /// 是 root,build_command 就跟著是 root」——`system_command_runner` 沒被
@@ -579,10 +611,19 @@ fn drop_privileges_for_build(cmd: &mut std::process::Command) -> ClientResult<()
         })?;
 
     // Safety: the closure only calls async-signal-safe libc functions
-    // (setgid/setuid) and returns before doing anything else; this matches
-    // the documented safety contract of `pre_exec`.
+    // (setgroups/setgid/setuid) and returns before doing anything else; this
+    // matches the documented safety contract of `pre_exec`.
     unsafe {
         cmd.pre_exec(move || {
+            // Clear root's supplementary groups (typically includes gid 0)
+            // FIRST — otherwise the "de-privileged" child stays a member of
+            // any group-0-writable file on the system even after
+            // setgid/setuid change the primary/effective/saved ids. Must run
+            // before setgid/setuid: dropping the primary uid/gid first can
+            // remove the privilege needed to call setgroups at all.
+            if libc::setgroups(0, std::ptr::null()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             // GID before UID: dropping UID first can leave us unprivileged to
             // change GID afterward (standard Unix privilege-drop ordering).
             if libc::setgid(gid) != 0 {
@@ -792,5 +833,41 @@ mod entry_is_safe_tests {
         // check happens at the call sites before this is even invoked.
         // Document that here so nobody "fixes" this later.
         assert!(entry_is_safe(""));
+    }
+}
+
+#[cfg(test)]
+mod entry_resolves_inside_install_dir_tests {
+    use super::entry_resolves_inside_install_dir;
+    use std::os::unix::fs::symlink;
+    use tempfile::tempdir;
+
+    #[test]
+    fn accepts_normal_file_inside_install_dir() {
+        let install_dir = tempdir().unwrap();
+        let main_file = install_dir.path().join("main");
+        std::fs::write(&main_file, b"bin").unwrap();
+
+        assert!(entry_resolves_inside_install_dir("pkg", &main_file, install_dir.path()).is_ok());
+    }
+
+    #[test]
+    fn rejects_symlink_escaping_install_dir() {
+        let install_dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let secret = outside.path().join("secret");
+        std::fs::write(&secret, b"root-owned").unwrap();
+
+        // `out_dir`/extracted content is build_command/publisher-controlled;
+        // this simulates `entry = "evil"` resolving to a symlink planted
+        // there that points outside install_path.
+        let evil = install_dir.path().join("evil");
+        symlink(&secret, &evil).unwrap();
+
+        let result = entry_resolves_inside_install_dir("pkg", &evil, install_dir.path());
+        assert!(
+            result.is_err(),
+            "symlink escaping install_dir must be rejected"
+        );
     }
 }
