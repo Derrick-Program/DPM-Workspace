@@ -3,6 +3,13 @@ use dpm_core::CoreError::*;
 use fs2::FileExt;
 use std::{fs::File, path::Path};
 
+/// Single source of truth for the `LocalRepo` column list — every query below
+/// builds its SELECT/INSERT column list from this, and `row_to_package` looks
+/// columns up by name, so reordering columns here can't silently desync a
+/// query string from the decode logic.
+const COLUMNS: &str =
+    "source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies";
+
 #[derive(Debug)]
 pub struct Db {
     db_path: String,
@@ -85,44 +92,47 @@ impl Db {
     }
 
     fn row_to_package(row: turso::Row) -> ClientResult<DbPackage> {
-        let get_text = |idx: usize| -> ClientResult<String> {
-            row.get_value(idx)
+        // Index derived from `COLUMNS` itself (not a hand-copied number), so
+        // reordering the column list here can't silently desync the query
+        // string from the decode below — turso's `Row` carries no column
+        // names of its own, only `Rows` does, so this is the closest we can
+        // get to name-based lookup without threading `Rows` through.
+        let col_idx = |name: &str| -> ClientResult<usize> {
+            COLUMNS
+                .split(", ")
+                .position(|c| c == name)
+                .ok_or_else(|| ClientError::Core(DatabaseError(format!("no column {name}"))))
+        };
+        let get_text = |name: &str| -> ClientResult<String> {
+            row.get_value(col_idx(name)?)
                 .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
                 .as_text()
                 .cloned()
                 .ok_or_else(|| {
-                    ClientError::Core(DatabaseError(format!("column {idx} is not text")))
+                    ClientError::Core(DatabaseError(format!("column {name} is not text")))
                 })
         };
-        let get_opt_text = |idx: usize| -> ClientResult<Option<String>> {
+        let get_opt_text = |name: &str| -> ClientResult<Option<String>> {
             Ok(row
-                .get_value(idx)
+                .get_value(col_idx(name)?)
                 .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
                 .as_text()
                 .cloned())
         };
-        let dependencies_json = get_opt_text(10)?;
+        let dependencies_json = get_opt_text("dependencies")?;
         Ok(DbPackage {
-            source: get_text(0)?,
-            name: get_text(1)?,
-            version: get_text(2)?,
-            kind: get_text(3)?,
-            url: get_opt_text(4)?,
-            hash: get_opt_text(5)?,
-            filename: get_opt_text(6)?,
-            build_command: get_opt_text(7)?,
-            description: get_text(8)?,
-            entry: get_text(9)?,
+            source: get_text("source")?,
+            name: get_text("name")?,
+            version: get_text("version")?,
+            kind: get_text("kind")?,
+            url: get_opt_text("url")?,
+            hash: get_opt_text("hash")?,
+            filename: get_opt_text("filename")?,
+            build_command: get_opt_text("build_command")?,
+            description: get_text("description")?,
+            entry: get_text("entry")?,
             dependencies: dependencies_json.and_then(|json| serde_json::from_str(&json).ok()),
         })
-    }
-
-    pub async fn execute_query(&self, query: &str) -> ClientResult<()> {
-        let conn = self.connect().await?;
-        conn.execute(query, ())
-            .await
-            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
-        Ok(())
     }
 
     pub async fn insert(&self, pkg: DbPackage) -> ClientResult<()> {
@@ -149,7 +159,9 @@ impl Db {
             to_value(dependencies_json),
         ];
         conn.execute(
-            "INSERT INTO LocalRepo (source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            &format!(
+                "INSERT INTO LocalRepo ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+            ),
             params,
         )
         .await
@@ -160,10 +172,7 @@ impl Db {
     pub async fn read_all(&self) -> ClientResult<Vec<DbPackage>> {
         let conn = self.connect().await?;
         let mut rows = conn
-            .query(
-                "SELECT source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies FROM LocalRepo",
-                (),
-            )
+            .query(&format!("SELECT {COLUMNS} FROM LocalRepo"), ())
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
         let mut packages = Vec::new();
@@ -186,7 +195,9 @@ impl Db {
         let conn = self.connect().await?;
         let mut rows = conn
             .query(
-                "SELECT source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies FROM LocalRepo WHERE source = ?1 AND name = ?2 AND version = ?3",
+                &format!(
+                    "SELECT {COLUMNS} FROM LocalRepo WHERE source = ?1 AND name = ?2 AND version = ?3"
+                ),
                 [source, name, version],
             )
             .await
@@ -201,6 +212,12 @@ impl Db {
         }
     }
 
+    // ponytail: delete/versions_of/sources_of/latest_version below have no
+    // production caller yet (only sync_source's insert + clear_table_for_source
+    // are wired up today) — kept as tested library surface for the CLI
+    // commands that will need them (per-version removal, multi-version
+    // listing, source disambiguation), not speculative bloat. Remove if a
+    // future review still finds them uncalled.
     pub async fn delete(&self, source: &str, name: &str, version: &str) -> ClientResult<()> {
         let conn = self.connect().await?;
         conn.execute(
@@ -210,15 +227,6 @@ impl Db {
         .await
         .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
         Ok(())
-    }
-
-    pub async fn drop_table(&self, tname: &str) -> ClientResult<()> {
-        self.execute_query(&format!("DROP TABLE IF EXISTS {}", tname))
-            .await
-    }
-
-    pub async fn clear_table(&self, tname: &str) -> ClientResult<()> {
-        self.execute_query(&format!("DELETE FROM {}", tname)).await
     }
 
     pub async fn clear_table_for_source(&self, source: &str) -> ClientResult<()> {
@@ -233,7 +241,7 @@ impl Db {
         let conn = self.connect().await?;
         let mut rows = conn
             .query(
-                "SELECT source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies FROM LocalRepo WHERE source = ?1 AND name = ?2",
+                &format!("SELECT {COLUMNS} FROM LocalRepo WHERE source = ?1 AND name = ?2"),
                 [source, name],
             )
             .await
@@ -289,7 +297,9 @@ impl Db {
         let conn = self.connect().await?;
         let mut rows = conn
             .query(
-                "SELECT source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies FROM LocalRepo WHERE source = ?1 AND name = ?2 ORDER BY rowid DESC LIMIT 1",
+                &format!(
+                    "SELECT {COLUMNS} FROM LocalRepo WHERE source = ?1 AND name = ?2 ORDER BY rowid DESC LIMIT 1"
+                ),
                 [source, name],
             )
             .await

@@ -1,7 +1,6 @@
 use super::ClientError;
 use super::ClientResult;
-use dpm_core::CoreError::*;
-use dpm_core::Dependency;
+use dpm_core::{Dependency, PackageKind};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -50,13 +49,17 @@ impl DbPackage {
         }
     }
 
-    /// 將結構轉為 JSON 字串
-    pub fn to_json_string(&self) -> ClientResult<String> {
-        serde_json::to_string(self).map_err(|e| ClientError::Core(JsonError(e)))
-    }
-
-    /// 從 JSON 字串解析為結構
-    pub fn from_json_string(json: &str) -> ClientResult<Self> {
-        serde_json::from_str(json).map_err(|e| ClientError::Core(JsonError(e)))
+    /// 把扁平化存進 `LocalRepo` 的 `kind`/`url`/`hash`/`filename`/`build_command`
+    /// 欄位還原成 `PackageKind`,呼叫端不需要自己比對 `"source"`/`"prebuilt"`
+    /// 字面值。
+    pub fn kind(&self) -> ClientResult<PackageKind> {
+        PackageKind::from_db_fields(
+            &self.kind,
+            self.url.clone(),
+            self.hash.clone(),
+            self.filename.clone(),
+            self.build_command.clone(),
+        )
+        .map_err(ClientError::Core)
     }
 }

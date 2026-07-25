@@ -1,8 +1,10 @@
 mod error;
+mod zip_file;
 pub use error::*;
 use serde::{Deserialize, Serialize};
 use serde_json::to_writer_pretty;
 use std::{collections::HashMap, io::Read, path::Path};
+pub use zip_file::*;
 
 /// 對檔案內容算 blake3 hash,回傳小寫十六進位字串。
 /// client(安裝驗證)、server(發布時算 hash)共用同一份實作。
@@ -11,6 +13,45 @@ pub fn hash_file(path: &Path) -> CoreResult<String> {
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
     Ok(blake3::hash(&buffer).to_hex().to_string())
+}
+
+/// `dpm`、`dpm-server` 兩個 CLI 的 clap 配色主題,共用同一份實作。
+pub fn get_styles() -> clap::builder::Styles {
+    clap::builder::Styles::styled()
+        .usage(
+            anstyle::Style::new()
+                .bold()
+                .underline()
+                .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Yellow))),
+        )
+        .header(
+            anstyle::Style::new()
+                .bold()
+                .underline()
+                .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Yellow))),
+        )
+        .literal(
+            anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green))),
+        )
+        .invalid(
+            anstyle::Style::new()
+                .bold()
+                .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Red))),
+        )
+        .error(
+            anstyle::Style::new()
+                .bold()
+                .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Red))),
+        )
+        .valid(
+            anstyle::Style::new()
+                .bold()
+                .underline()
+                .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green))),
+        )
+        .placeholder(
+            anstyle::Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::White))),
+        )
 }
 
 /// 代表套件的依賴資訊
@@ -137,6 +178,69 @@ pub enum PackageKind {
     },
     /// 只提供原始碼 + build 指令,client 在本機執行 build(Phase 4 才會真的走這條路)。
     Source { build: String },
+}
+
+impl PackageKind {
+    /// 供本地 SQLite `LocalRepo` 表使用的扁平欄位("prebuilt" | "source" +
+    /// 該 variant 專屬欄位)。跟 [`Self::from_db_fields`] 成對——variant 名稱
+    /// 只在這兩個函式裡出現一次,呼叫端不需要自己重複 "prebuilt"/"source"
+    /// 字面值。
+    pub fn to_db_fields(
+        &self,
+    ) -> (
+        &'static str,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) {
+        match self {
+            PackageKind::Prebuilt {
+                url,
+                hash,
+                file_name,
+            } => (
+                "prebuilt",
+                Some(url.clone()),
+                Some(hash.clone()),
+                Some(file_name.clone()),
+                None,
+            ),
+            PackageKind::Source { build } => ("source", None, None, None, Some(build.clone())),
+        }
+    }
+
+    /// [`Self::to_db_fields`] 的反向操作,把 `LocalRepo` 讀出來的扁平欄位還原
+    /// 成 `PackageKind`,而不是讓呼叫端各自比對 `kind == "source"` 字串。
+    pub fn from_db_fields(
+        kind: &str,
+        url: Option<String>,
+        hash: Option<String>,
+        filename: Option<String>,
+        build_command: Option<String>,
+    ) -> CoreResult<Self> {
+        match kind {
+            "prebuilt" => Ok(PackageKind::Prebuilt {
+                url: url.ok_or_else(|| {
+                    CoreError::InvalidPackage("prebuilt package missing url".to_string())
+                })?,
+                hash: hash.ok_or_else(|| {
+                    CoreError::InvalidPackage("prebuilt package missing hash".to_string())
+                })?,
+                file_name: filename.ok_or_else(|| {
+                    CoreError::InvalidPackage("prebuilt package missing filename".to_string())
+                })?,
+            }),
+            "source" => Ok(PackageKind::Source {
+                build: build_command.ok_or_else(|| {
+                    CoreError::InvalidPackage("source package missing build command".to_string())
+                })?,
+            }),
+            other => Err(CoreError::InvalidPackage(format!(
+                "unknown package kind: {other}"
+            ))),
+        }
+    }
 }
 
 /// 套件的一個發布版本。已發布的版本視為不可變——要變更只能發布新版本或撤下整個版本。

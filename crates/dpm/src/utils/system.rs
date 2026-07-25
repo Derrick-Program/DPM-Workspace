@@ -1,6 +1,6 @@
 use super::ClientError;
 use super::ClientResult;
-use crate::{ActionInfo, Context, Scope, Setting, Source};
+use crate::{Context, Scope, Setting, Source};
 use dpm_core::JsonStorage;
 use libc::{getpwuid, getuid};
 use std::{
@@ -219,7 +219,15 @@ impl SystemController {
         }
         Ok(())
     }
-    pub async fn init(&self, ctx: &Context) -> ClientResult<Setting> {
+    /// OS bootstrap only — no longer reaches into `ActionInfo` to seed the
+    /// first-run source index (that used to make this "system utility"
+    /// module the sole orchestrator of first-run business logic, while
+    /// `ActionInfo` itself constructs a `SystemController`: a two-way
+    /// dependency between the OS-utility seam and the command-orchestration
+    /// seam). The `bool` tells the caller whether `config.json` was just
+    /// created, so `entry()` — which already owns command dispatch — can
+    /// decide whether to seed sources, instead of that decision living here.
+    pub async fn init(&self, ctx: &Context) -> ClientResult<(Setting, bool)> {
         self.system_command_runner(
             "mkdir",
             vec!["-p", ctx.install_dir.to_str().unwrap()],
@@ -237,7 +245,8 @@ impl SystemController {
         )?;
         self.permision_check(&ctx.main_dir)?;
         let config_path = ctx.config_dir.join("config.json");
-        if !config_path.exists() {
+        let is_first_run = !config_path.exists();
+        if is_first_run {
             let default_setting = Setting {
                 sources: vec![Source {
                     alias: "official".to_string(),
@@ -248,13 +257,10 @@ impl SystemController {
                 }],
             };
             JsonStorage::to_json(&default_setting, &config_path)?;
-            for source in &default_setting.sources {
-                ActionInfo::init_update(ctx, source).await?;
-            }
         }
         self.permision_check(&ctx.main_dir)?;
         let config: Setting = JsonStorage::from_json(&config_path)?;
-        Ok(config)
+        Ok((config, is_first_run))
     }
 }
 

@@ -1,8 +1,6 @@
 mod action;
 mod cli_parse;
 mod error;
-// mod json_parse;
-mod zip_file;
 pub use action::*;
 use anyhow::Result;
 use clap::Parser;
@@ -10,10 +8,7 @@ pub use cli_parse::*;
 use dpm_core::*;
 pub use error::*;
 
-// pub use json_parse::*;
-use std::sync::OnceLock;
-use std::{env::current_dir, fs::create_dir_all, path::PathBuf};
-pub use zip_file::*;
+use std::{env::current_dir, fs::create_dir_all};
 // pub type Repos = HashMap<String, RepoInfo>;
 #[derive(Parser)]
 #[command(propagate_version = true)]
@@ -27,13 +22,13 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
-static PROJECT_SRC: OnceLock<PathBuf> = OnceLock::new();
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let repo_src = current_dir()?.join("packages");
-    PROJECT_SRC.set(repo_src.clone()).unwrap();
+    let project_src = current_dir()?.join("packages");
+    let repo_dir = current_dir()?.join("Repo");
     let software_repo_info = current_dir()?.join("RepoInfo.json");
-    create_dir_all(repo_src)?;
+    create_dir_all(&project_src)?;
+    create_dir_all(&repo_dir)?;
     let mut repo_info: RepoInfo;
     if !software_repo_info.exists() {
         println!("RepoInfo.json not found. Initializing an empty one.");
@@ -46,10 +41,10 @@ fn main() -> Result<()> {
         });
     }
     match &cli.command {
-        Commands::Hash(obj) => hash(obj)?,
-        Commands::Fix(obj) => fix(obj, &mut repo_info)?,
-        Commands::Build(obj) => build(obj)?,
-        Commands::Init(obj) => init(obj)?,
+        Commands::Hash(obj) => hash(obj, &project_src)?,
+        Commands::Fix(obj) => fix(obj, &mut repo_info, &project_src)?,
+        Commands::Build(obj) => build(obj, &project_src, &repo_dir)?,
+        Commands::Init(obj) => init(obj, &project_src)?,
     }
     JsonStorage::to_json(&repo_info, &software_repo_info)?;
     Ok(())

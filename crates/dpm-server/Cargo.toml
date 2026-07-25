@@ -16,16 +16,9 @@ path = "src/main.rs"
 
 [dependencies]
 DPM-Core = { workspace = true, features = ["server"] }
-anstyle.workspace = true
 anyhow.workspace = true
 clap.workspace = true
-clap_complete.workspace = true
 colored.workspace = true
-flate2.workspace = true
-hex-literal = "0.4.1"
 reqwest = { workspace = true, features = ["blocking"] }
-serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 walkdir.workspace = true
-zip.workspace = true

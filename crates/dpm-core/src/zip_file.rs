@@ -1,4 +1,3 @@
-#![allow(warnings)]
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::Path;
@@ -6,6 +5,7 @@ use walkdir::WalkDir;
 use zip::ZipArchive;
 use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
+/// client(下載後解壓)、server(打包發布)共用同一份 zip 讀寫實作。
 pub fn zip_folder(folder_path: &Path, zip_file_path: &Path) -> io::Result<()> {
     let file = File::create(zip_file_path)?;
     let walkdir = WalkDir::new(folder_path);
@@ -13,7 +13,7 @@ pub fn zip_folder(folder_path: &Path, zip_file_path: &Path) -> io::Result<()> {
 
     let mut zip = ZipWriter::new(file);
     let options = FileOptions::default()
-        .compression_method(CompressionMethod::Deflated) // 使用Deflated压缩
+        .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o755);
 
     for entry in it.filter_map(|e| e.ok()) {
@@ -25,7 +25,6 @@ pub fn zip_folder(folder_path: &Path, zip_file_path: &Path) -> io::Result<()> {
             let mut f = File::open(path)?;
             io::copy(&mut f, &mut zip)?;
         } else if !name.as_os_str().is_empty() {
-            // 确保目录以 / 结尾
             zip.add_directory(name.to_string_lossy() + "/", options)?;
         }
     }
@@ -33,10 +32,9 @@ pub fn zip_folder(folder_path: &Path, zip_file_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn unzip_file(zip_file_path: &Path, output_folder: &Path, name: &str) -> io::Result<()> {
+pub fn unzip_file(zip_file_path: &Path, output_folder: &Path) -> io::Result<()> {
     let zip_file = File::open(zip_file_path)?;
     let mut archive = ZipArchive::new(BufReader::new(zip_file))?;
-    let output_folder = output_folder.join(name);
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let output_path = match file.enclosed_name() {
@@ -49,7 +47,7 @@ pub fn unzip_file(zip_file_path: &Path, output_folder: &Path, name: &str) -> io:
         } else {
             if let Some(p) = output_path.parent() {
                 if !p.exists() {
-                    std::fs::create_dir_all(&p)?;
+                    std::fs::create_dir_all(p)?;
                 }
             }
             let mut outfile = File::create(&output_path)?;

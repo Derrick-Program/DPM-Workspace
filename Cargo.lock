@@ -7,14 +7,11 @@ name = "DPM"
 version = "0.1.0"
 dependencies = [
  "DPM-Core",
- "anstyle",
  "anyhow",
  "clap",
  "clap_complete",
  "colored",
  "directories",
- "dotenv",
- "flate2",
  "fs2",
  "futures-util",
  "geni",
@@ -30,22 +27,22 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "turso",
- "walkdir",
- "zip",
 ]
 
 [[package]]
 name = "DPM-Core"
 version = "0.1.2"
 dependencies = [
- "anyhow",
+ "anstyle",
  "blake3",
- "futures-util",
+ "clap",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "walkdir",
+ "zip",
 ]
 
 [[package]]
@@ -53,19 +50,12 @@ name = "DPM-Server"
 version = "0.1.0"
 dependencies = [
  "DPM-Core",
- "anstyle",
  "anyhow",
  "clap",
- "clap_complete",
  "colored",
- "flate2",
- "hex-literal",
  "reqwest",
- "serde",
- "serde_json",
  "thiserror 2.0.19",
  "walkdir",
- "zip",
 ]
 
 [[package]]
@@ -1065,12 +1055,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dotenv"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
-
-[[package]]
 name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1651,12 +1635,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
-name = "hex-literal"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
 
 [[package]]
 name = "hkdf"
