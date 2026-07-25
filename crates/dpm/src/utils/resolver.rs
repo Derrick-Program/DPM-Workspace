@@ -52,25 +52,28 @@ pub fn parse_version(s: &str) -> ClientResult<SemanticVersion> {
 /// existing `Op::Exact` handling in `comparator_to_range` rather than a
 /// separate code path.
 pub fn parse_constraint(s: &str) -> ClientResult<Ranges<SemanticVersion>> {
-    let s = s.trim();
-    if s.is_empty() || s == "*" {
+    let original = s.trim();
+    if original.is_empty() || original == "*" {
         return Ok(Ranges::full());
     }
     let rewritten;
-    let s = if s.chars().all(|c| c.is_ascii_digit() || c == '.') {
-        rewritten = format!("={s}");
+    let s = if original.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        rewritten = format!("={original}");
         rewritten.as_str()
     } else {
-        s
+        original
     };
+    // Error messages below use `original` (what the user actually typed),
+    // never the internally-rewritten `s` — e.g. a bare "1.2.3" that
+    // overflows u32 should report '1.2.3', not the injected '=1.2.3'.
     let req = VersionReq::parse(s).map_err(|e| {
         ClientError::Core(CoreError::DependencyError(format!(
-            "invalid version constraint '{s}': {e}"
+            "invalid version constraint '{original}': {e}"
         )))
     })?;
     let mut result = Ranges::full();
     for comparator in &req.comparators {
-        result = result.intersection(&comparator_to_range(comparator, s)?);
+        result = result.intersection(&comparator_to_range(comparator, original)?);
     }
     Ok(result)
 }
