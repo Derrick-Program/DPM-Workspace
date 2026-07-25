@@ -52,7 +52,8 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
       整份檔案(`PackageInfo`/`RepoInfo`/`JsonStorage` 舊版複本)沒被 `main.rs` 的 `mod` 列進去,不會編譯進二進位檔,純粹佔位置容易誤改。直接刪掉整份檔案。
 
 - [ ] **`dpm` 的 `Cargo.toml` 有多個宣告但完全沒用到的 dependency**
-      `crates/dpm/Cargo.toml`:`git2 = "0.18.1"`(全 workspace grep 不到任何 `git2` 使用)、`rusqlite = "0.31.0"`(client 資料層已經全面走 diesel,沒有任何 `rusqlite::` 呼叫)、`dotenv = "0.15.0"`(沒有任何 `dotenv::dotenv()` 呼叫,且 `.env` 已經被 Infisical 取代退役)。`digest`(workspace dependency,`dpm`/`dpm-server`/`dpm-core` 都宣告但沒有任何 `digest::` 直接呼叫,單純被 `sha2` 內部依賴)。`dpm`/`dpm-server` 各自宣告的 `flate2` 也沒有任何直接使用。`dpm-server` 的 `hex-literal` 同樣沒被使用到。全部可以拿掉,縮短編譯時間。
+      `crates/dpm/Cargo.toml`: `rusqlite = "0.31.0"`(client 資料層已經全面走 diesel,沒有任何 `rusqlite::` 呼叫)、`dotenv = "0.15.0"`(沒有任何 `dotenv::dotenv()` 呼叫,且 `.env` 已經被 Infisical 取代退役)。`digest`(workspace dependency,`dpm`/`dpm-server`/`dpm-core` 都宣告但沒有任何 `digest::` 直接呼叫,單純被 `sha2` 內部依賴)。`dpm`/`dpm-server` 各自宣告的 `flate2` 也沒有任何直接使用。`dpm-server` 的 `hex-literal` 同樣沒被使用到。全部可以拿掉,縮短編譯時間。
+      (~~`git2 = "0.18.1"` — 已由 Task 3 的 `clone_package_source()` 使用,非死依賴,已解決。~~)
 
 ## P3 — 版本 / 一致性
 
