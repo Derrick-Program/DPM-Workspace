@@ -337,7 +337,14 @@ fn format_pubgrub_error(err: PubGrubError<Provider>) -> ClientError {
     match err {
         PubGrubError::NoSolution(mut tree) => {
             tree.collapse_no_versions();
-            let report = DefaultStringReporter::report(&tree);
+            // `root_id()`'s synthetic identity ("$root/$root", version
+            // 0.0.0) is an implementation detail of how this function joins
+            // multiple CLI-requested packages into one solve — it means
+            // nothing to whoever reads this error, so scrub it out of the
+            // human-readable report before it reaches the user.
+            let report = DefaultStringReporter::report(&tree)
+                .replace("$root/$root 0.0.0", "the requested packages")
+                .replace("$root/$root", "the requested packages");
             ClientError::Core(CoreError::DependencyError(report))
         }
         other => ClientError::Core(CoreError::DependencyError(other.to_string())),
@@ -554,10 +561,15 @@ mod tests {
         ];
         let requests = vec![(None, "app".to_string(), None)];
         let err = resolve_install_set(&all, &requests).unwrap_err();
-        assert!(matches!(
-            err,
-            ClientError::Core(CoreError::DependencyError(_))
-        ));
+        match &err {
+            ClientError::Core(CoreError::DependencyError(msg)) => {
+                assert!(
+                    !msg.contains("$root"),
+                    "NoSolution report leaked the synthetic root id: {msg}"
+                );
+            }
+            other => panic!("expected DependencyError, got {other:?}"),
+        }
     }
 
     #[test]
