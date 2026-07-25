@@ -1,17 +1,14 @@
-use std::{
-    fs::{self, remove_dir_all, remove_file, Permissions},
-    os::unix::fs::PermissionsExt,
-    path::{Component, Path},
-};
+use std::path::{Component, Path};
 
 use crate::{
-    clone_package_source, download_file, parse_package_spec, read_file_from_zip,
+    clone_package_source, fetch_and_verify_prebuilt, parse_package_spec, place_package,
     resolve_install_set, system::*, unzip_file, ClientError, ClientResult, Context, DbPackage,
-    Hashes, Setting, Source, SourceAction,
+    Setting, Source, SourceAction,
 };
 use colored::Colorize;
 use dpm_core::CoreError;
-use dpm_core::{Dependency, JsonStorage, PackageInfo, PackageKind, RepoInfo};
+use dpm_core::{Dependency, JsonStorage, PackageKind, RepoInfo};
+use std::fs::{remove_dir_all, remove_file};
 use walkdir::WalkDir;
 
 /// `(source_hint, name, constraint)` — one parsed `[source/]name[@constraint]`
@@ -116,49 +113,10 @@ impl ActionInfo {
                     )))
                 })?;
                 let download_path = staging.path().join(&filename);
-                let url = repo_package_info.url.as_deref().ok_or_else(|| {
-                    ClientError::Core(CoreError::InvalidPackage(format!("{pkg} has no url")))
-                })?;
-                download_file(url, &download_path).await?;
+                let package_info =
+                    fetch_and_verify_prebuilt(pkg, repo_package_info, &download_path).await?;
                 if self.verbose {
                     println!("  {}", "Download successed!".green());
-                }
-                let package_info_test: String =
-                    read_file_from_zip(&download_path, "packageInfo.json").unwrap();
-                let package_info: PackageInfo =
-                    JsonStorage::from_str_to(package_info_test.as_str()).unwrap();
-                let package_hash_info: Hashes = JsonStorage::from_str_to(
-                    read_file_from_zip(&download_path, "hashes.json")
-                        .unwrap()
-                        .as_str(),
-                )
-                .unwrap();
-                if self.verbose {
-                    println!(
-                        "  {}",
-                        "Checking Package Hash ...(May take a while)".yellow()
-                    );
-                }
-                let hash = dpm_core::hash_file(&download_path)?;
-                let expected_hash = repo_package_info.hash.clone().ok_or_else(|| {
-                    ClientError::Core(CoreError::InvalidPackage(format!(
-                        "{pkg} has no hash recorded"
-                    )))
-                })?;
-                if expected_hash != hash {
-                    return Err(ClientError::Core(CoreError::HashMismatch {
-                        expected: expected_hash,
-                        actual: hash,
-                    }));
-                }
-                if &package_info.hash != package_hash_info.get("hashes.json").unwrap() {
-                    return Err(ClientError::Core(CoreError::HashMismatch {
-                        expected: package_info.hash.clone(),
-                        actual: package_hash_info.get("hashes.json").unwrap().clone(),
-                    }));
-                }
-
-                if self.verbose {
                     println!("  {}", "Hashes Passed".green());
                     println!("  {}", "Installing ...".yellow());
                 }
@@ -167,33 +125,17 @@ impl ActionInfo {
                 unzip_file(&download_path, &extracted)
                     .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
 
-                let install_path = self.ctx.install_dir.join(pkg);
-                swap_into_install_dir(&extracted, &install_path, staging.path())?;
-                if self.verbose {
-                    println!("  {}", "Installed!".green());
-                    println!("  {}", "Create Links ...".yellow());
-                }
-                if !entry_is_safe(&package_info.file_name) {
-                    return Err(ClientError::Core(CoreError::InvalidPackage(format!(
-                        "{pkg} has an unsafe entry path: {}",
-                        package_info.file_name
-                    ))));
-                }
-                let main_file = install_path.join(&package_info.file_name);
-                entry_resolves_inside_install_dir(pkg, &main_file, &install_path)?;
-                let ln_path = self.ctx.bin_dir.join(pkg);
-                fs::set_permissions(&main_file, Permissions::from_mode(0o755))
-                    .map_err(|e| ClientError::SystemError(e.to_string()))?;
-                self.system_controller.system_command_runner(
-                    "ln",
-                    vec![
-                        "-s",
-                        main_file.display().to_string().as_str(),
-                        ln_path.display().to_string().as_str(),
-                    ],
-                    "Can't create link",
+                place_package(
+                    pkg,
+                    &extracted,
+                    &package_info.file_name,
+                    &self.ctx.install_dir,
+                    &self.ctx.bin_dir,
+                    staging.path(),
+                    &self.system_controller,
                 )?;
                 if self.verbose {
+                    println!("  {}", "Installed!".green());
                     println!("  {}", "Successed Create Link!".green());
                 }
                 // `staging` (tempfile::TempDir) drop 在這裡發生,連同任何被搬到
@@ -273,32 +215,15 @@ impl ActionInfo {
             )));
         }
 
-        let install_path = self.ctx.install_dir.join(pkg);
-        swap_into_install_dir(&out_dir, &install_path, staging.path())?;
-
-        if !repo_package_info.entry.is_empty() {
-            if !entry_is_safe(&repo_package_info.entry) {
-                return Err(ClientError::Core(CoreError::InvalidPackage(format!(
-                    "{pkg} has an unsafe entry path: {}",
-                    repo_package_info.entry
-                ))));
-            }
-            let main_file = install_path.join(&repo_package_info.entry);
-            entry_resolves_inside_install_dir(pkg, &main_file, &install_path)?;
-            let ln_path = self.ctx.bin_dir.join(pkg);
-            fs::set_permissions(&main_file, Permissions::from_mode(0o755))
-                .map_err(|e| ClientError::SystemError(e.to_string()))?;
-            self.system_controller.system_command_runner(
-                "ln",
-                vec![
-                    "-s",
-                    main_file.display().to_string().as_str(),
-                    ln_path.display().to_string().as_str(),
-                ],
-                "Can't create link",
-            )?;
-        }
-        Ok(())
+        place_package(
+            pkg,
+            &out_dir,
+            &repo_package_info.entry,
+            &self.ctx.install_dir,
+            &self.ctx.bin_dir,
+            staging.path(),
+            &self.system_controller,
+        )
     }
 
     /// 抓某一個來源的完整索引,清空該來源在本地 DB 的舊資料,把每個套件的每個
@@ -534,7 +459,7 @@ impl ActionInfo {
 /// install_path 都維持在「舊版本完整存在」或「還沒開始換裝」其中一種完好
 /// 狀態,不會出現半殘目錄。呼叫端的 staging TempDir drop 時會把搬出來的
 /// 舊版本一併清掉。
-fn swap_into_install_dir(
+pub(crate) fn swap_into_install_dir(
     new_dir: &Path,
     install_path: &Path,
     staging_root: &Path,
@@ -571,7 +496,7 @@ fn swap_into_install_dir(
 /// `PathBuf::join` 遇到絕對路徑會直接整個取代 base(這是文件化行為,不是
 /// bug),所以只要 entry 是絕對路徑,或含有 `..` component,就一律視為不安全
 /// ——不需要等到檔案系統上真的存在才能判斷,也不需要 canonicalize。
-fn entry_is_safe(entry: &str) -> bool {
+pub(crate) fn entry_is_safe(entry: &str) -> bool {
     let path = Path::new(entry);
     !path.is_absolute() && !path.components().any(|c| matches!(c, Component::ParentDir))
 }
@@ -584,7 +509,7 @@ fn entry_is_safe(entry: &str) -> bool {
 /// 所以在把 `main_file` 交給 `fs::set_permissions`(等同 `chmod`,會跟隨
 /// symlink)之前,canonicalize 兩邊、確認解完符號連結後 `main_file` 仍然落在
 /// `install_path` 底下——這是額外的一層檢查,不是取代 `entry_is_safe`。
-fn entry_resolves_inside_install_dir(
+pub(crate) fn entry_resolves_inside_install_dir(
     pkg: &str,
     main_file: &Path,
     install_path: &Path,
