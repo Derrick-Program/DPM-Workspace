@@ -13,9 +13,9 @@ async fn main() -> ClientResult<()> {
         // 不是 root 時會自動重新以 sudo 執行自己;已是 root 則直接繼續
         sudo::escalate_if_needed().map_err(|e| ClientError::SystemError(e.to_string()))?;
     }
-    // scope 確定後才初始化全域路徑與資料庫
-    DPM::set_globle_var(scope).await?;
-    if let Err(e) = DPM::entry(args).await {
+    // scope 確定後才能算出真正的路徑跟開資料庫
+    let ctx = DPM::Context::for_scope(scope).await?;
+    if let Err(e) = DPM::entry(ctx, args).await {
         eprintln!("{}", e);
         std::process::exit(1);
     }

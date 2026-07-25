@@ -20,7 +20,7 @@ crates/
 
 - **Features**:`dpm-core` 有 `client` / `server` 兩個 feature,只 gate `impl` 區塊,**不可以 gate struct 欄位**(workspace 的 feature unification 會讓單獨編譯與整體編譯行為不同,之前就是這樣炸的)。feature 必須保持 additive。`RepoInfo` 的 CRUD 方法(`add_package`/`update_package`/`remove_package`)在 `server` feature 下,`fetch_update_repo_info`/`fetch_package`/`get_single_package_info` 在 `client` feature 下。
 - **Client 資料層**:`turso`(純 Rust、async、SQLite 相容)+ `geni` 做 migration。DB 檔案位置依安裝 scope 而定(見下方權限模型),migration SQL 檔放 `crates/dpm/migrations/`,用 `include_str!` 編進 binary,啟動時攤開到 DB 檔案同層的 `migrations/` 資料夾再交給 `geni::migrate_database` 執行。用 fs2 file lock(`<data_dir>/LocalRepo.lock`)防多實例。舊的 `diesel.toml`/`schema.rs`/diesel migration 機制已完全移除。
-- **權限模型**:雙 scope。預設 per-user,安裝路徑用 `directories::ProjectDirs::from("com", "duacodie", "dpm")`,完全不需要 root,`SystemController::permision_check`/`system_command_runner` 內部依 `SCOPE`(`OnceLock<Scope>`)自我短路,per-user 模式下不會呼叫 sudo/chown。加上 `--system`/`-S` flag 才走 shared 安裝(`/opt/com.duacodie/DPM`),行為跟舊版一致:Linux 整進程 `sudo::escalate_if_needed()` 提權,macOS 逐指令 `sudo`,`SUDO_USER` 用來取得原始使用者做 chown。scope 由 `main.rs` 在呼叫 `set_globle_var(scope)` 前,從解析出來的 `Cli.System` 決定(見 `dpm/src/lib.rs::set_globle_var` 與 `main.rs`)。
+- **權限模型**:雙 scope。預設 per-user,安裝路徑用 `directories::ProjectDirs::from("com", "duacodie", "dpm")`,完全不需要 root,`SystemController::permision_check`/`system_command_runner` 依建構時傳入的 `Scope` 自我短路(`SystemController { scope }` 欄位,不是全域狀態),per-user 模式下不會呼叫 sudo/chown。加上 `--system`/`-S` flag 才走 shared 安裝(`/opt/com.duacodie/DPM`),行為跟舊版一致:Linux 整進程 `sudo::escalate_if_needed()` 提權,macOS 逐指令 `sudo`,`SUDO_USER` 用來取得原始使用者做 chown。所有跟 scope 相關的路徑跟本地資料庫 handle 都收在 `dpm/src/context.rs::Context` 裡(`Context::for_scope(scope)` 建production版、`Context::for_test(dir)` 建測試用隔離版)——這取代了舊版 `MAIN_DIR`/`BIN_DIR`/`INSTALL_DIR`/`CONFIG`/`SCOPE`/`DB_INSTANCE` 六個 `OnceLock` 全域變數(那套設計每個 process 只能 set 一次,測試沒辦法指向暫時目錄)。scope 由 `main.rs` 解析出 `Cli.System` 後決定,再呼叫 `Context::for_scope(scope)`。
 - **Client CLI 手刻 vs Server CLI derive**:`dpm` 的 `cli_parse.rs` 用 `clap::Command` 手動建構(`build_cli()`)並在 `get_args()` 手動 match 每個 subcommand 填 `Cli` struct;`dpm-server` 用 `#[derive(Parser)]`/`#[derive(Subcommand)]`。兩邊新增 subcommand 的改法不同,改 `dpm` 那邊要同時改 `build_cli()` 與 `get_args()` 的 match。
 - **Server 資料**:`Repo/` 放打包好的 `.zip`,`Repo/src/<pkg>/` 放原始碼 + `packageInfo.json` + `hashes.json`,索引是 `RepoInfo.json`。`dpm-server` 的四個子指令對應 `action.rs`:`init`(建立套件骨架)→`hash`(算 `Repo/src/<pkg>/` 下所有檔案的 SHA256 寫入 `hashes.json`,並回填 `packageInfo.json.hash`)→`build`(zip 打包到 `Repo/<pkg>.zip`)→`fix add/del`(把套件加入/移除 `RepoInfo.json` 索引)。
 - **序列化相容**:`PackageBasicInfo` 的 `entry`/`description` 是 `Option` + `#[serde(default, skip_serializing_if)]`,改欄位時注意舊 JSON 相容性。
@@ -29,10 +29,9 @@ crates/
 
 ## 已知待處理問題
 
-- `crates/dpm/src/utils/system.rs` 的 `init()`:`repo_url`/`repo_info` 塞進 config HashMap 後沒有寫回 `config.json`(檔案永遠是 `{}`)。
-- 權限模型不一致:Linux `chown -R root:root`,macOS `chown user:admin`。
-- `PackageManager::Unknown` 與 unsupported OS 走 `panic!`,應改為錯誤回傳(`system.rs` 裡多處 `match` 分支)。
+- 權限模型不一致(刻意,非 bug):Linux `--system` 下 `chown -R root:root`,macOS `chown user:admin`——兩邊「誰能再管理已裝套件」的行為本來就不同,細節見 README.md「`--system` 的擁有權」一節。
 - `crates/dpm/Cargo.toml` 的 `turso` 目前刻意釘在 `0.6.1`(而非最新的 `0.7.1`),因為 `geni` 內部也是釘 `turso 0.6.1`——兩邊版號要一致,否則同一個 binary 裡會連進兩份 `turso`,導致 `turso_sdk_kit` 的 C ABI symbol 重複定義(linker 直接失敗),`mimalloc` feature 的 `#[global_allocator]` 也會衝突。之後 `geni` 出新版跟進更新的 `turso` 時,這裡要同步升版,不能只改自己這邊。
+- `crates/dpm-server`:GitHub 上實際 host 的 `DPM-Server` repo 的 `RepoInfo.json` 還是舊版單一物件格式(`"packages": {"test": {...}}`),沒跟著 Phase 2 的多版本 schema(`"packages": {"test": [{...}]}`)更新——`dpm update`/`dpm init` 第一次拉這個真實 repo 的索引會因為 JSON 格式不符直接報錯。這是遠端展示用 repo 資料沒同步,不是程式碼問題。
 
 ## 常用指令
 

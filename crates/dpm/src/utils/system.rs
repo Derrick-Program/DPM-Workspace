@@ -1,10 +1,11 @@
 use super::ClientError;
 use super::ClientResult;
-use crate::{ActionInfo, Scope, Setting, Source, BIN_DIR, CONFIG, INSTALL_DIR, MAIN_DIR, SCOPE};
+use crate::{ActionInfo, Context, Scope, Setting, Source};
 use dpm_core::JsonStorage;
 use libc::{getpwuid, getuid};
 use std::{
     ffi::CStr,
+    path::Path,
     process::{Command, Stdio},
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,10 +126,21 @@ pub struct SystemAction {
     package_manager: PackageManager,
     verbose: bool,
 }
-#[derive(Debug)]
-pub struct SystemController;
+/// Holds the `Scope` its caller resolved once (from `--system`/no flag) —
+/// replaces reading a process-wide `SCOPE: OnceLock<Scope>` global from
+/// deep inside `permision_check`/`system_command_runner`. Two calls with
+/// different `Scope`s (e.g. one real, one from a test) now genuinely
+/// behave differently, instead of both racing to set the same `OnceLock`.
+#[derive(Debug, Clone, Copy)]
+pub struct SystemController {
+    scope: Scope,
+}
 
 impl SystemController {
+    pub fn new(scope: Scope) -> Self {
+        Self { scope }
+    }
+
     fn get_current_username(&self) -> Option<String> {
         unsafe {
             let uid = getuid();
@@ -141,8 +153,15 @@ impl SystemController {
             }
         }
     }
-    pub fn permision_check(&self) -> ClientResult<()> {
-        if SCOPE.get() != Some(&Scope::System) {
+    /// Sweeps ownership of `main_dir` back to root (Linux) or the invoking
+    /// user (macOS) under `--system`. Takes the directory explicitly rather
+    /// than reading a global: this runs once *before* `Context` exists yet
+    /// (`Context::for_scope`'s own `main_dir` bootstrap) and again *after*
+    /// (`entry()`'s post-command sweep), so a `Context` isn't always
+    /// available at the call site — a bare path is the smaller, always-valid
+    /// interface.
+    pub fn permision_check(&self, main_dir: &Path) -> ClientResult<()> {
+        if self.scope != Scope::System {
             return Ok(());
         }
         // 若透過 sudo 執行,getuid() 會拿到 root;優先用 SUDO_USER 取得原始使用者
@@ -156,7 +175,7 @@ impl SystemController {
         if cfg!(target_os = "linux") {
             self.system_command_runner(
                 "chown",
-                vec!["-R", "root:root", MAIN_DIR.get().unwrap().to_str().unwrap()],
+                vec!["-R", "root:root", main_dir.to_str().unwrap()],
                 "Can't run chown",
             )?;
         } else if cfg!(target_os = "macos") {
@@ -165,7 +184,7 @@ impl SystemController {
                 vec![
                     "-R",
                     format!("{}:admin", username).as_str(),
-                    MAIN_DIR.get().unwrap().to_str().unwrap(),
+                    main_dir.to_str().unwrap(),
                 ],
                 "Can't run chown",
             )?;
@@ -183,7 +202,7 @@ impl SystemController {
                 "unsupported OS: dpm only supports Linux and macOS".to_string(),
             ));
         }
-        let mut cmd = if SCOPE.get() == Some(&Scope::System) {
+        let mut cmd = if self.scope == Scope::System {
             let mut c = Command::new("sudo");
             c.arg(command);
             c
@@ -200,24 +219,24 @@ impl SystemController {
         }
         Ok(())
     }
-    pub async fn init(&self) -> ClientResult<Setting> {
+    pub async fn init(&self, ctx: &Context) -> ClientResult<Setting> {
         self.system_command_runner(
             "mkdir",
-            vec!["-p", INSTALL_DIR.get().unwrap().to_str().unwrap()],
+            vec!["-p", ctx.install_dir.to_str().unwrap()],
             "Can't create Software dir",
         )?;
         self.system_command_runner(
             "mkdir",
-            vec!["-p", CONFIG.get().unwrap().to_str().unwrap()],
+            vec!["-p", ctx.config_dir.to_str().unwrap()],
             "Can't create Settings dir",
         )?;
         self.system_command_runner(
             "mkdir",
-            vec!["-p", BIN_DIR.get().unwrap().to_str().unwrap()],
+            vec!["-p", ctx.bin_dir.to_str().unwrap()],
             "Can't create bin dir",
         )?;
-        self.permision_check()?;
-        let config_path = CONFIG.get().unwrap().join("config.json");
+        self.permision_check(&ctx.main_dir)?;
+        let config_path = ctx.config_dir.join("config.json");
         if !config_path.exists() {
             let default_setting = Setting {
                 sources: vec![Source {
@@ -230,10 +249,10 @@ impl SystemController {
             };
             JsonStorage::to_json(&default_setting, &config_path)?;
             for source in &default_setting.sources {
-                ActionInfo::init_update(source).await?;
+                ActionInfo::init_update(ctx, source).await?;
             }
         }
-        self.permision_check()?;
+        self.permision_check(&ctx.main_dir)?;
         let config: Setting = JsonStorage::from_json(&config_path)?;
         Ok(config)
     }

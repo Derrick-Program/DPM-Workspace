@@ -3,6 +3,7 @@ use dpm_core::CoreError::*;
 use fs2::FileExt;
 use std::{fs::File, path::Path};
 
+#[derive(Debug)]
 pub struct Db {
     db_path: String,
     _lock_file: File,

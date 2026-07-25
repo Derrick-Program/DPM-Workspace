@@ -5,9 +5,9 @@ use std::{
 };
 
 use crate::{
-    clone_package_source, download_file, get_db, parse_package_spec, read_file_from_zip,
-    resolve_install_set, system::*, unzip_file, ClientError, ClientResult, DbPackage, Hashes,
-    Setting, Source, SourceAction, BIN_DIR, CONFIG, INSTALL_DIR, MAIN_DIR,
+    clone_package_source, download_file, parse_package_spec, read_file_from_zip,
+    resolve_install_set, system::*, unzip_file, ClientError, ClientResult, Context, DbPackage,
+    Hashes, Setting, Source, SourceAction,
 };
 use colored::Colorize;
 use dpm_core::CoreError;
@@ -22,6 +22,7 @@ type ParsedInstallSpec = (Option<String>, String, Option<String>);
 
 #[derive(Debug)]
 pub struct ActionInfo {
+    pub ctx: Context,
     pub pkgs: Vec<String>,
     pub verbose: bool,
     pub setting_config: Setting,
@@ -29,13 +30,20 @@ pub struct ActionInfo {
     pub system_action: SystemAction,
 }
 impl ActionInfo {
-    pub fn new(pkgs: Vec<String>, verbose: bool, setting_config: Setting) -> ActionInfo {
+    pub fn new(
+        ctx: Context,
+        pkgs: Vec<String>,
+        verbose: bool,
+        setting_config: Setting,
+    ) -> ActionInfo {
+        let scope = ctx.scope;
         ActionInfo {
+            ctx,
             pkgs,
             verbose,
             setting_config,
             system_action: SystemAction::new(verbose),
-            system_controller: SystemController,
+            system_controller: SystemController::new(scope),
         }
     }
     /// Splits `self.pkgs` (raw `[source/]name[@constraint]` strings) into
@@ -63,7 +71,9 @@ impl ActionInfo {
         (is, isnot)
     }
     pub async fn install(&self) -> ClientResult<()> {
-        let all_packages = get_db()
+        let all_packages = self
+            .ctx
+            .db
             .read_all()
             .await
             .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
@@ -84,7 +94,7 @@ impl ActionInfo {
                     println!("{}\n\n  {}", pkg.on_green(), "Downloading...".yellow());
                 }
 
-                let staging_root_base = MAIN_DIR.get().unwrap().join(".staging");
+                let staging_root_base = self.ctx.main_dir.join(".staging");
                 std::fs::create_dir_all(&staging_root_base)
                     .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
                 let staging = tempfile::Builder::new()
@@ -157,7 +167,7 @@ impl ActionInfo {
                 unzip_file(&download_path, &extracted)
                     .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
 
-                let install_path = INSTALL_DIR.get().unwrap().join(pkg);
+                let install_path = self.ctx.install_dir.join(pkg);
                 swap_into_install_dir(&extracted, &install_path, staging.path())?;
                 if self.verbose {
                     println!("  {}", "Installed!".green());
@@ -171,7 +181,7 @@ impl ActionInfo {
                 }
                 let main_file = install_path.join(&package_info.file_name);
                 entry_resolves_inside_install_dir(pkg, &main_file, &install_path)?;
-                let ln_path = BIN_DIR.get().unwrap().join(pkg);
+                let ln_path = self.ctx.bin_dir.join(pkg);
                 fs::set_permissions(&main_file, Permissions::from_mode(0o755))
                     .map_err(|e| ClientError::SystemError(e.to_string()))?;
                 self.system_controller.system_command_runner(
@@ -263,7 +273,7 @@ impl ActionInfo {
             )));
         }
 
-        let install_path = INSTALL_DIR.get().unwrap().join(pkg);
+        let install_path = self.ctx.install_dir.join(pkg);
         swap_into_install_dir(&out_dir, &install_path, staging.path())?;
 
         if !repo_package_info.entry.is_empty() {
@@ -275,7 +285,7 @@ impl ActionInfo {
             }
             let main_file = install_path.join(&repo_package_info.entry);
             entry_resolves_inside_install_dir(pkg, &main_file, &install_path)?;
-            let ln_path = BIN_DIR.get().unwrap().join(pkg);
+            let ln_path = self.ctx.bin_dir.join(pkg);
             fs::set_permissions(&main_file, Permissions::from_mode(0o755))
                 .map_err(|e| ClientError::SystemError(e.to_string()))?;
             self.system_controller.system_command_runner(
@@ -295,13 +305,13 @@ impl ActionInfo {
     /// 版本各自插入一列。`update()`(既有來源全部重整)、`init_update()`
     /// (`init()` 第一次執行時的初始灌入)共用這個邏輯——原本兩處各自複製一份
     /// 幾乎相同的程式碼。
-    async fn sync_source(source: &Source) -> ClientResult<()> {
+    async fn sync_source(ctx: &Context, source: &Source) -> ClientResult<()> {
         let mut remote_repo = RepoInfo::new();
         remote_repo
             .fetch_update_repo_info(&source.repo_info)
             .await?;
 
-        get_db().clear_table_for_source(&source.alias).await?;
+        ctx.db.clear_table_for_source(&source.alias).await?;
 
         for (name, versions) in remote_repo.get_package_handler() {
             for version_info in versions {
@@ -327,7 +337,7 @@ impl ActionInfo {
                         ("source".to_string(), None, None, None, Some(build.clone()))
                     }
                 };
-                get_db()
+                ctx.db
                     .insert(DbPackage::new(
                         &source.alias,
                         name,
@@ -351,18 +361,18 @@ impl ActionInfo {
         println!("{} Updating...", "==>".blue());
         for source in &self.setting_config.sources {
             println!("{} Updating source '{}'...", "==>".blue(), source.alias);
-            Self::sync_source(source).await?;
+            Self::sync_source(&self.ctx, source).await?;
         }
         println!("{} Updated!", "==>".green());
         Ok(())
     }
 
-    pub async fn init_update(source: &Source) -> ClientResult<()> {
-        Self::sync_source(source).await
+    pub async fn init_update(ctx: &Context, source: &Source) -> ClientResult<()> {
+        Self::sync_source(ctx, source).await
     }
 
     pub async fn source(&self, action: SourceAction) -> ClientResult<()> {
-        let config_path = CONFIG.get().unwrap().join("config.json");
+        let config_path = self.ctx.config_dir.join("config.json");
         let mut setting: Setting = JsonStorage::from_json(&config_path)?;
 
         match action {
@@ -409,7 +419,7 @@ impl ActionInfo {
                         "no source with alias '{alias}'"
                     )));
                 }
-                get_db().clear_table_for_source(&alias).await?;
+                self.ctx.db.clear_table_for_source(&alias).await?;
                 JsonStorage::to_json(&setting, &config_path)?;
                 println!("{}", "Source removed.".green());
             }
@@ -423,15 +433,17 @@ impl ActionInfo {
     }
 
     pub async fn uninstall(&self) -> ClientResult<()> {
-        let all_packages = get_db()
+        let all_packages = self
+            .ctx
+            .db
             .read_all()
             .await
             .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
         let (is, isnot) = self.parse_mine(&all_packages);
         if !is.is_empty() {
             for (_, pkg, _) in is {
-                let pre_rm_location = INSTALL_DIR.get().unwrap().join(&pkg);
-                let pre_rm_ln = BIN_DIR.get().unwrap().join(&pkg);
+                let pre_rm_location = self.ctx.install_dir.join(&pkg);
+                let pre_rm_ln = self.ctx.bin_dir.join(&pkg);
                 if self.verbose {
                     println!("{}\n\n  {}", pkg.on_green(), "Removing...".red());
                 }
@@ -456,7 +468,9 @@ impl ActionInfo {
     }
 
     pub async fn search(&self) -> ClientResult<()> {
-        let all_packages = get_db()
+        let all_packages = self
+            .ctx
+            .db
             .read_all()
             .await
             .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
@@ -479,7 +493,7 @@ impl ActionInfo {
         if sys {
             self.system_action.list_packages()?;
         } else {
-            let path = INSTALL_DIR.get().unwrap();
+            let path = &self.ctx.install_dir;
             for entry in WalkDir::new(path) {
                 let entry = entry.map_err(|e| ClientError::Core(CoreError::IoError(e.into())))?;
                 let _path = entry.path();
@@ -489,7 +503,9 @@ impl ActionInfo {
     }
 
     pub async fn upgrade(&self) -> ClientResult<()> {
-        let all_packages = get_db()
+        let all_packages = self
+            .ctx
+            .db
             .read_all()
             .await
             .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;

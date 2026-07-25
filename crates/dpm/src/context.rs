@@ -1,0 +1,197 @@
+use crate::{ClientError, ClientResult, Db, Scope, SystemController};
+use directories::ProjectDirs;
+use dpm_core::CoreError::DatabaseError;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+/// Everything `ActionInfo`/`SystemController` need to know about *where*
+/// this run of `dpm` lives: which scope it's operating in, the four
+/// directories that scope resolves to, and a handle to the local package
+/// database opened under `main_dir`.
+///
+/// This replaces what used to be six process-wide `OnceLock` statics
+/// (`MAIN_DIR`/`BIN_DIR`/`INSTALL_DIR`/`CONFIG`/`SCOPE`/`DB_INSTANCE` in
+/// `lib.rs`) set once by `set_globle_var` and read from anywhere via
+/// `.get().unwrap()`. A `OnceLock` can only be set once per process and
+/// always resolves to the real per-user/`--system` paths — there was no way
+/// for a test to point `install()`/`init()` at a throwaway directory instead
+/// of the real machine's config/data directories (`config_tests.rs`
+/// documented this gap directly). `Context` is passed explicitly instead:
+/// `Context::for_scope` is the production adapter (real `ProjectDirs`/
+/// `/opt/com.duacodie/DPM` paths), `Context::for_test` is the test adapter
+/// (everything under a caller-supplied tempdir) — two adapters at the same
+/// seam.
+#[derive(Debug, Clone)]
+pub struct Context {
+    pub scope: Scope,
+    pub main_dir: PathBuf,
+    pub bin_dir: PathBuf,
+    pub install_dir: PathBuf,
+    pub config_dir: PathBuf,
+    pub db: Arc<Db>,
+}
+
+struct Paths {
+    main_dir: PathBuf,
+    bin_dir: PathBuf,
+    install_dir: PathBuf,
+    config_dir: PathBuf,
+}
+
+fn compute_paths(scope: Scope) -> ClientResult<Paths> {
+    match scope {
+        Scope::PerUser => {
+            let proj_dirs = ProjectDirs::from("com", "duacodie", "dpm").ok_or_else(|| {
+                ClientError::SystemError("no valid home directory found".to_string())
+            })?;
+            let data_dir = proj_dirs.data_dir().to_path_buf();
+            Ok(Paths {
+                main_dir: data_dir.clone(),
+                bin_dir: data_dir.join("bin"),
+                install_dir: data_dir.join("Software"),
+                config_dir: proj_dirs.config_dir().to_path_buf(),
+            })
+        }
+        Scope::System => {
+            let root = PathBuf::from("/opt/com.duacodie/DPM");
+            Ok(Paths {
+                main_dir: root.clone(),
+                bin_dir: root.join("bin"),
+                install_dir: root.join("Software"),
+                config_dir: root.join("Settings"),
+            })
+        }
+    }
+}
+
+async fn open_db(main_dir: &std::path::Path) -> ClientResult<Db> {
+    let db_path = main_dir.join("LocalRepo.db");
+    let lock_path = main_dir.join("LocalRepo.lock");
+    let db = Db::new(db_path.to_str().unwrap(), lock_path.to_str().unwrap())
+        .await
+        .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+    db.run_migrations().await?;
+    Ok(db)
+}
+
+impl Context {
+    /// Production constructor. Resolves `scope`'s real paths, creates
+    /// `main_dir` (fixing ownership under `--system`) if it doesn't exist
+    /// yet, and opens the real local package database under it.
+    pub async fn for_scope(scope: Scope) -> ClientResult<Self> {
+        let paths = compute_paths(scope)?;
+        if !paths.main_dir.exists() {
+            let controller = SystemController::new(scope);
+            controller.system_command_runner(
+                "mkdir",
+                vec!["-p", paths.main_dir.to_str().unwrap()],
+                "Can't create DPM main dir",
+            )?;
+            controller.permision_check(&paths.main_dir)?;
+        }
+        let db = open_db(&paths.main_dir).await?;
+        Ok(Context {
+            scope,
+            main_dir: paths.main_dir,
+            bin_dir: paths.bin_dir,
+            install_dir: paths.install_dir,
+            config_dir: paths.config_dir,
+            db: Arc::new(db),
+        })
+    }
+
+    /// Test constructor: every path lives under `root` (a caller-owned
+    /// tempdir) instead of the real per-user/`--system` locations, and scope
+    /// is always `PerUser` (no root/sudo, no `--system` chown behavior to
+    /// simulate — tests exercising `SystemController`'s scope-specific
+    /// branches do so directly against `Scope`, not through this).
+    ///
+    /// Deliberately not `#[cfg(test)]`: integration tests under
+    /// `crates/dpm/tests/` link against the library built *without*
+    /// `--cfg test` (only the crate's own unit tests get that), so a
+    /// `#[cfg(test)]` item here would be invisible to them — same reason
+    /// `Db::new` (also test-consumed) is a plain `pub fn`.
+    pub async fn for_test(root: &std::path::Path) -> ClientResult<Self> {
+        let main_dir = root.to_path_buf();
+        let bin_dir = main_dir.join("bin");
+        let install_dir = main_dir.join("Software");
+        let config_dir = main_dir.join("Settings");
+        for dir in [&main_dir, &bin_dir, &install_dir, &config_dir] {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| ClientError::Core(dpm_core::CoreError::IoError(e)))?;
+        }
+        let db = open_db(&main_dir).await?;
+        Ok(Context {
+            scope: Scope::PerUser,
+            main_dir,
+            bin_dir,
+            install_dir,
+            config_dir,
+            db: Arc::new(db),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_user_and_system_scopes_produce_different_roots() {
+        let per_user = compute_paths(Scope::PerUser).unwrap();
+        let system = compute_paths(Scope::System).unwrap();
+        assert_ne!(per_user.main_dir, system.main_dir);
+        assert_eq!(system.main_dir, PathBuf::from("/opt/com.duacodie/DPM"));
+        assert_eq!(system.bin_dir, PathBuf::from("/opt/com.duacodie/DPM/bin"));
+        assert_eq!(
+            system.install_dir,
+            PathBuf::from("/opt/com.duacodie/DPM/Software")
+        );
+        assert_eq!(
+            system.config_dir,
+            PathBuf::from("/opt/com.duacodie/DPM/Settings")
+        );
+    }
+
+    #[tokio::test]
+    async fn for_test_creates_isolated_directory_tree_and_working_db() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        assert_eq!(ctx.main_dir, root.path());
+        assert!(ctx.bin_dir.starts_with(root.path()));
+        assert!(ctx.install_dir.starts_with(root.path()));
+        assert!(ctx.config_dir.starts_with(root.path()));
+        assert!(ctx.bin_dir.exists());
+        assert!(ctx.install_dir.exists());
+        assert!(ctx.config_dir.exists());
+
+        // The DB is real and usable, not a stub — proves the seam gives a
+        // fully working Context, not just plausible-looking paths.
+        let all = ctx.db.read_all().await.unwrap();
+        assert!(all.is_empty());
+    }
+
+    #[tokio::test]
+    async fn two_for_test_contexts_are_fully_isolated_from_each_other() {
+        let root_a = tempfile::tempdir().unwrap();
+        let root_b = tempfile::tempdir().unwrap();
+        let ctx_a = Context::for_test(root_a.path()).await.unwrap();
+        let ctx_b = Context::for_test(root_b.path()).await.unwrap();
+
+        ctx_a
+            .db
+            .insert(crate::DbPackage::new(
+                "official", "foo", "1.0.0", "prebuilt", None, None, None, None, "", "", None,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(ctx_a.db.read_all().await.unwrap().len(), 1);
+        assert_eq!(
+            ctx_b.db.read_all().await.unwrap().len(),
+            0,
+            "a second Context::for_test must not see the first one's data"
+        );
+    }
+}
