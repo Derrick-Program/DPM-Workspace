@@ -111,18 +111,6 @@ mod tests {
                 assert!(result.is_err());
             }
         }
-
-        #[cfg(feature = "client")]
-        mod client_tests {
-            use dpm_core::*;
-
-            #[tokio::test]
-            async fn get_package_info_unknown_version_errors() {
-                let repo = RepoInfo::new();
-                let result = repo.get_package_info("package1", "1.0.0").await;
-                assert!(result.is_err());
-            }
-        }
     }
 
     // 測試 JsonStorage 功能

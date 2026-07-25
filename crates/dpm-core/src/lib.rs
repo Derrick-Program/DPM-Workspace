@@ -239,33 +239,6 @@ impl RepoInfo {
         self.packages = repo_info.packages;
         Ok(())
     }
-
-    /// 取得某套件某個特定版本的完整 `packageInfo.json`(只有 `Prebuilt` 版本
-    /// 有 URL 可抓;`Source` 版本目前回傳 `InvalidPackage` 錯誤,Phase 4 client
-    /// 端 source 安裝路徑落地後才會補上對應處理)。
-    pub async fn get_package_info(
-        &self,
-        package_name: &str,
-        version: &str,
-    ) -> CoreResult<PackageInfo> {
-        let versions = self.versions_of(package_name)?;
-        let entry = versions
-            .iter()
-            .find(|v| v.version == version)
-            .ok_or_else(|| CoreError::PackageNotFound(format!("{package_name}@{version}")))?;
-        match &entry.kind {
-            PackageKind::Prebuilt { url, file_name, .. } => {
-                let new_url = url.replace(
-                    file_name,
-                    format!("src/{package_name}/packageInfo.json").as_str(),
-                );
-                JsonStorage::from_url(&new_url).await
-            }
-            PackageKind::Source { .. } => Err(CoreError::InvalidPackage(format!(
-                "{package_name}@{version} is a source package, not yet installable"
-            ))),
-        }
-    }
 }
 impl Dependency {
     pub fn new(name: &str, version: &str) -> Self {
