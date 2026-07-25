@@ -5,9 +5,9 @@ use std::{
 };
 
 use crate::{
-    clone_package_source, get_db, parse_package_spec, read_file_from_zip, resolve_install_set,
-    system::*, unzip_file, ClientError, ClientResult, DbPackage, Hashes, Setting, Source,
-    SourceAction, BIN_DIR, CONFIG, INSTALL_DIR, MAIN_DIR,
+    clone_package_source, download_file, get_db, parse_package_spec, read_file_from_zip,
+    resolve_install_set, system::*, unzip_file, ClientError, ClientResult, DbPackage, Hashes,
+    Setting, Source, SourceAction, BIN_DIR, CONFIG, INSTALL_DIR, MAIN_DIR,
 };
 use colored::Colorize;
 use dpm_core::CoreError;
@@ -106,15 +106,10 @@ impl ActionInfo {
                     )))
                 })?;
                 let download_path = staging.path().join(&filename);
-                get_db()
-                    .download_file(
-                        &source_alias,
-                        pkg,
-                        &repo_package_info.version,
-                        &download_path,
-                    )
-                    .await
-                    .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?;
+                let url = repo_package_info.url.as_deref().ok_or_else(|| {
+                    ClientError::Core(CoreError::InvalidPackage(format!("{pkg} has no url")))
+                })?;
+                download_file(url, &download_path).await?;
                 if self.verbose {
                     println!("  {}", "Download successed!".green());
                 }

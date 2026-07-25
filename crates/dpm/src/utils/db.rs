@@ -1,9 +1,7 @@
 use super::{ClientError, ClientResult, DbPackage};
 use dpm_core::CoreError::*;
 use fs2::FileExt;
-use futures_util::StreamExt;
 use std::{fs::File, path::Path};
-use tokio::io::AsyncWriteExt;
 
 pub struct Db {
     db_path: String,
@@ -303,43 +301,5 @@ impl Db {
             Some(row) => Ok(Some(Self::row_to_package(row)?)),
             None => Ok(None),
         }
-    }
-
-    pub async fn download_file(
-        &self,
-        source: &str,
-        name: &str,
-        version: &str,
-        dest_path: &Path,
-    ) -> ClientResult<()> {
-        let package = self
-            .read_one(source, name, version)
-            .await?
-            .ok_or_else(|| ClientError::Core(PackageNotFound(name.to_string())))?;
-        let url = package
-            .url
-            .ok_or_else(|| ClientError::Core(InvalidPackage(format!("{name} has no url"))))?;
-        let req = reqwest::get(&url)
-            .await
-            .map_err(|e| ClientError::Core(NetworkError(e.to_string())))?;
-        if !req.status().is_success() {
-            return Err(ClientError::Core(NetworkError(format!(
-                "Failed to download file: HTTP {}",
-                req.status()
-            ))));
-        }
-        let mut file = tokio::fs::File::create(dest_path)
-            .await
-            .map_err(|e| ClientError::Core(IoError(e)))?;
-        let mut stream = req.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|e| ClientError::SystemError(format!("Failed to read chunk: {}", e)))?;
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| ClientError::SystemError(format!("Failed to write chunk: {}", e)))?;
-        }
-        println!("File downloaded to: {}", dest_path.display());
-        Ok(())
     }
 }
