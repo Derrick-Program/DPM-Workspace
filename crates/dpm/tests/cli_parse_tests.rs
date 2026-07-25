@@ -1,83 +1,74 @@
 #[cfg(test)]
 mod cli_parse_tests {
-    use std::sync::Once;
-    use DPM::build_cli;
+    use clap::Parser;
+    use DPM::{Cli, Commands, SourceAction};
 
-    // build_cli() reads the BIN/VERSION OnceLocks that init_cli_metadata()
-    // populates (normally done once by main() before any CLI parsing runs).
-    // Tests share a process, so guard the one-time init with Once rather
-    // than letting the second test's call panic on an already-set OnceLock.
-    static INIT: Once = Once::new();
-    fn setup() {
-        INIT.call_once(|| {
-            DPM::init_cli_metadata();
-        });
-    }
+    // Typed assertions against the parsed `Cli`/`Commands`/`SourceAction`
+    // enums, not stringly-typed `ArgMatches` lookups — the whole point of
+    // moving `dpm`'s CLI parsing to `#[derive(Parser)]` (matching
+    // `dpm-server`'s style) is that callers (and tests) get real Rust data
+    // straight out of parsing, with no hand-written match-and-extract step
+    // in between.
 
     #[test]
     fn source_add_parses_url_and_alias() {
-        setup();
-        let cli = build_cli();
-        let matches = cli
-            .try_get_matches_from([
-                "dpm",
-                "source",
-                "add",
-                "https://example.com/repo",
-                "--as",
-                "myrepo",
-            ])
-            .unwrap();
-        let (name, sub) = matches.subcommand().unwrap();
-        assert_eq!(name, "source");
-        let (inner_name, inner) = sub.subcommand().unwrap();
-        assert_eq!(inner_name, "add");
-        assert_eq!(
-            inner.get_one::<String>("URL").unwrap(),
-            "https://example.com/repo"
-        );
-        assert_eq!(inner.get_one::<String>("as").unwrap(), "myrepo");
+        let cli = Cli::try_parse_from([
+            "dpm",
+            "source",
+            "add",
+            "https://example.com/repo",
+            "--as",
+            "myrepo",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Source {
+                action: SourceAction::Add { url, alias },
+            }) => {
+                assert_eq!(url, "https://example.com/repo");
+                assert_eq!(alias.as_deref(), Some("myrepo"));
+            }
+            other => panic!("expected Source(Add), got {other:?}"),
+        }
     }
 
     #[test]
     fn source_add_alias_is_optional() {
-        setup();
-        let cli = build_cli();
-        let matches = cli
-            .try_get_matches_from(["dpm", "source", "add", "https://example.com/repo"])
-            .unwrap();
-        let (_, sub) = matches.subcommand().unwrap();
-        let (_, inner) = sub.subcommand().unwrap();
-        assert!(inner.get_one::<String>("as").is_none());
+        let cli =
+            Cli::try_parse_from(["dpm", "source", "add", "https://example.com/repo"]).unwrap();
+        match cli.command {
+            Some(Commands::Source {
+                action: SourceAction::Add { alias, .. },
+            }) => assert!(alias.is_none()),
+            other => panic!("expected Source(Add), got {other:?}"),
+        }
     }
 
     #[test]
     fn source_remove_requires_alias() {
-        setup();
-        let cli = build_cli();
-        let matches = cli
-            .try_get_matches_from(["dpm", "source", "remove", "myrepo"])
-            .unwrap();
-        let (_, sub) = matches.subcommand().unwrap();
-        let (inner_name, inner) = sub.subcommand().unwrap();
-        assert_eq!(inner_name, "remove");
-        assert_eq!(inner.get_one::<String>("ALIAS").unwrap(), "myrepo");
+        let cli = Cli::try_parse_from(["dpm", "source", "remove", "myrepo"]).unwrap();
+        match cli.command {
+            Some(Commands::Source {
+                action: SourceAction::Remove { alias },
+            }) => assert_eq!(alias, "myrepo"),
+            other => panic!("expected Source(Remove), got {other:?}"),
+        }
     }
 
     #[test]
     fn source_list_takes_no_args() {
-        setup();
-        let cli = build_cli();
-        let matches = cli.try_get_matches_from(["dpm", "source", "list"]).unwrap();
-        let (_, sub) = matches.subcommand().unwrap();
-        assert_eq!(sub.subcommand().unwrap().0, "list");
+        let cli = Cli::try_parse_from(["dpm", "source", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Source {
+                action: SourceAction::List
+            })
+        ));
     }
 
     #[test]
     fn source_without_subcommand_is_an_error() {
-        setup();
-        let cli = build_cli();
-        let result = cli.try_get_matches_from(["dpm", "source"]);
+        let result = Cli::try_parse_from(["dpm", "source"]);
         assert!(result.is_err(), "source requires add/remove/list");
     }
 }

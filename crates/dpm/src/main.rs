@@ -2,9 +2,8 @@ use DPM::{ClientError, ClientResult, Scope};
 
 #[tokio::main]
 async fn main() -> ClientResult<()> {
-    DPM::init_cli_metadata();
     let args = DPM::get_args().map_err(|e| ClientError::SystemError(e.to_string()))?;
-    let scope = if args.System {
+    let scope = if args.system {
         Scope::System
     } else {
         Scope::PerUser

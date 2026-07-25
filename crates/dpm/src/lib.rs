@@ -1,8 +1,11 @@
+// Crate name is intentionally `DPM` (PascalCase) for historical reasons —
+// see CLAUDE.md's naming-conventions note. This is the only remaining
+// reason for this allow; the PascalCase struct fields that used to need it
+// are gone (Candidate 4's clap-derive migration).
 #![allow(non_snake_case)]
 use std::collections::HashMap;
 pub type Hashes = HashMap<String, String>;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Source {
@@ -29,45 +32,64 @@ pub use arch::*;
 pub use cli_parse::*;
 pub use context::*;
 pub use utils::*;
-static VERSION: OnceLock<String> = OnceLock::new();
-static BIN: OnceLock<String> = OnceLock::new();
 
 pub async fn entry(ctx: Context, config: Cli) -> ClientResult<()> {
     let system_controller = SystemController::new(ctx.scope);
     let setting_config: Setting = system_controller.init(&ctx).await?;
-    let pass_info = ActionInfo::new(
-        ctx.clone(),
-        config.PackageName.unwrap_or_default(),
-        config.Verbose,
-        setting_config,
-    );
-    match config.Commands.unwrap() {
-        CliCommands::Install => pass_info.install().await?,
-        CliCommands::List => {
-            if let Some(options) = &config.Other {
-                if let Some(true) = options.List_sys_installed {
-                    pass_info.list(true).await?;
-                }
-                if let Some(true) = options.List_installed {
-                    pass_info.list(false).await?;
-                }
+
+    match config.command {
+        Some(Commands::Install { pn, verbose }) => {
+            ActionInfo::new(ctx.clone(), pn, verbose, setting_config)
+                .install()
+                .await?
+        }
+        Some(Commands::Update { verbose }) => {
+            ActionInfo::new(ctx.clone(), vec![], verbose, setting_config)
+                .update()
+                .await?
+        }
+        Some(Commands::Uninstall { pn, verbose }) => {
+            ActionInfo::new(ctx.clone(), pn, verbose, setting_config)
+                .uninstall()
+                .await?
+        }
+        Some(Commands::Search { pn, verbose }) => {
+            ActionInfo::new(ctx.clone(), pn, verbose, setting_config)
+                .search()
+                .await?
+        }
+        Some(Commands::List {
+            verbose,
+            list_sys_installed,
+            list_installed,
+        }) => {
+            let info = ActionInfo::new(ctx.clone(), vec![], verbose, setting_config);
+            if list_sys_installed {
+                info.list(true).await?;
+            }
+            if list_installed {
+                info.list(false).await?;
             }
         }
-        CliCommands::Search => pass_info.search().await?,
-        CliCommands::Uninstall => pass_info.uninstall().await?,
-        CliCommands::Update => pass_info.update().await?,
-        CliCommands::Upgrade => pass_info.upgrade().await?,
-        CliCommands::UpgradeSelf => pass_info.upgrade_self(),
-        CliCommands::Source(action) => pass_info.source(action).await?,
-        CliCommands::None => panic!("No command found"),
+        Some(Commands::Upgrade { verbose, pn }) => {
+            ActionInfo::new(ctx.clone(), pn, verbose, setting_config)
+                .upgrade()
+                .await?
+        }
+        Some(Commands::UpgradeSelf { verbose }) => {
+            ActionInfo::new(ctx.clone(), vec![], verbose, setting_config).upgrade_self()
+        }
+        Some(Commands::Source { action }) => {
+            ActionInfo::new(ctx.clone(), vec![], false, setting_config)
+                .source(action)
+                .await?
+        }
+        // Only reachable via `--system` alone with no subcommand — `--gen`
+        // already exits the process before returning a `Cli` (see
+        // `get_args`), and `arg_required_else_help` catches the
+        // truly-empty case.
+        None => return Err(ClientError::ConfigError("no command given".to_string())),
     }
     system_controller.permision_check(&ctx.main_dir)?;
     Ok(())
-}
-
-/// 設定跟 scope 無關的 CLI metadata(clap 建構 Command 需要),
-/// 必須在 get_args() 之前呼叫,因為 scope 要等 get_args() 解析完 --system 才知道。
-pub fn init_cli_metadata() {
-    VERSION.set(env!("CARGO_PKG_VERSION").to_string()).unwrap();
-    BIN.set("dpm".to_string()).unwrap();
 }
