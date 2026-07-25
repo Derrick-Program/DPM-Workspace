@@ -5,8 +5,9 @@ use std::{
 };
 
 use crate::{
-    get_db, read_file_from_zip, system::*, unzip_file, ClientError, ClientResult, DbPackage,
-    Hashes, Setting, Source, SourceAction, BIN_DIR, CONFIG, INSTALL_DIR, MAIN_DIR,
+    clone_package_source, get_db, read_file_from_zip, system::*, unzip_file, ClientError,
+    ClientResult, DbPackage, Hashes, Setting, Source, SourceAction, BIN_DIR, CONFIG, INSTALL_DIR,
+    MAIN_DIR,
 };
 use colored::Colorize;
 use dpm_core::CoreError;
@@ -85,6 +86,14 @@ impl ActionInfo {
                     .prefix(pkg)
                     .tempdir_in(&staging_root_base)
                     .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+
+                if repo_package_info.kind == "source" {
+                    self.install_source_package(pkg, &source_alias, &repo_package_info, &staging)?;
+                    if self.verbose {
+                        println!("  {}", "Installed!".green());
+                    }
+                    continue;
+                }
 
                 let filename = repo_package_info.filename.clone().ok_or_else(|| {
                     ClientError::Core(CoreError::InvalidPackage(format!(
@@ -173,6 +182,87 @@ impl ActionInfo {
             for pkg in isnot {
                 self.system_action.install_package(&pkg)?;
             }
+        }
+        Ok(())
+    }
+
+    /// 安裝一個 `kind: "source"` 的套件:淺層 clone 它的來源 repo、在 staging
+    /// 目錄裡用呼叫者當下的權限(不經過 `system_command_runner`,所以不管
+    /// `--system` 與否都不會提權)執行 `build_command`,`$OUT` 指向這次的產出
+    /// 目錄,成功後透過既有的 `swap_into_install_dir` 原子換裝。
+    fn install_source_package(
+        &self,
+        pkg: &str,
+        source_alias: &str,
+        repo_package_info: &DbPackage,
+        staging: &tempfile::TempDir,
+    ) -> ClientResult<()> {
+        if source_alias != "official" {
+            println!(
+                "{} installing a source package from a third-party source, not vetted by the DPM team",
+                "Warning:".yellow()
+            );
+        }
+
+        let build_command = repo_package_info.build_command.clone().ok_or_else(|| {
+            ClientError::Core(CoreError::InvalidPackage(format!(
+                "{pkg} is kind=source but has no build command recorded"
+            )))
+        })?;
+
+        let sources = self.setting_config.sources.clone();
+        let source = sources
+            .iter()
+            .find(|s| s.alias == source_alias)
+            .ok_or_else(|| {
+                ClientError::ConfigError(format!("source '{source_alias}' is not configured"))
+            })?;
+
+        if self.verbose {
+            println!("  {}", "Fetching source...".yellow());
+        }
+        let clone_dir = staging.path().join("clone");
+        let package_src = clone_package_source(&source.repo_url, pkg, &clone_dir)?;
+
+        let out_dir = staging.path().join("out");
+        std::fs::create_dir_all(&out_dir).map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+
+        if self.verbose {
+            println!(
+                "  {}",
+                "Building (running an untrusted build command)...".yellow()
+            );
+        }
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&build_command)
+            .current_dir(&package_src)
+            .env("OUT", &out_dir)
+            .status()
+            .map_err(|e| ClientError::SystemError(format!("failed to run build command: {e}")))?;
+        if !status.success() {
+            return Err(ClientError::SystemError(format!(
+                "build command for {pkg} exited with {status}"
+            )));
+        }
+
+        let install_path = INSTALL_DIR.get().unwrap().join(pkg);
+        swap_into_install_dir(&out_dir, &install_path, staging.path())?;
+
+        if !repo_package_info.entry.is_empty() {
+            let main_file = install_path.join(&repo_package_info.entry);
+            let ln_path = BIN_DIR.get().unwrap().join(pkg);
+            fs::set_permissions(&main_file, Permissions::from_mode(0o755))
+                .map_err(|e| ClientError::SystemError(e.to_string()))?;
+            self.system_controller.system_command_runner(
+                "ln",
+                vec![
+                    "-s",
+                    main_file.display().to_string().as_str(),
+                    ln_path.display().to_string().as_str(),
+                ],
+                "Can't create link",
+            )?;
         }
         Ok(())
     }
