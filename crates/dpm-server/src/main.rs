@@ -34,9 +34,8 @@ fn main() -> Result<()> {
     create_dir_all(repo_src)?;
     let mut repo_info: RepoInfo;
     if !software_repo_info.exists() {
-        println!("RepoInfo.json not found. Initializing a new one.");
+        println!("RepoInfo.json not found. Initializing an empty one.");
         repo_info = RepoInfo::new();
-        repo_init(&mut repo_info)?;
     } else {
         println!("Loading RepoInfo.json...");
         repo_info = JsonStorage::from_json(&software_repo_info).unwrap_or_else(|_| {

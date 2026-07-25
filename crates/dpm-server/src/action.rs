@@ -3,8 +3,7 @@ use anyhow::Result as AnyhowResult;
 use colored::Colorize;
 use std::collections::HashMap;
 use std::env::current_dir;
-use std::fs::{read_dir, File};
-use std::path::PathBuf;
+use std::fs::File;
 use walkdir::WalkDir;
 pub fn hash(obj: &Hash) -> AnyhowResult<()> {
     let project_path = PROJECT_SRC.get().unwrap().join(&obj.packagename);
@@ -113,27 +112,44 @@ pub fn fix(obj: &Fix, repo: &mut RepoInfo) -> Result<()> {
 
 fn fix_add(obj: &Add, repo: &mut RepoInfo) -> Result<()> {
     let path = PROJECT_SRC.get().unwrap().join(&obj.project_name);
-    let package = current_dir()?
-        .join("Repo")
-        .join(format!("{}.zip", obj.project_name));
-    if !package.exists() {
+    let pk_info: PackageInfo = JsonStorage::from_json(&path.join("packageInfo.json"))?;
+
+    if !obj.url.starts_with("https://") {
         return Err(anyhow::anyhow!(
-            "\nPackage: {} {}",
-            format!("{}", package.display()).yellow(),
-            "Not found!".red()
+            "\n--url {} {}",
+            obj.url.yellow(),
+            "must use https://".red()
         ));
     }
-    let pk_info: PackageInfo = JsonStorage::from_json(&path.join("packageInfo.json"))?;
+    let file_name = obj
+        .file_name
+        .clone()
+        .or_else(|| obj.url.rsplit('/').next().map(|s| s.to_string()))
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("could not derive a file name from --url; pass --file-name explicitly")
+        })?;
+
+    let response = reqwest::blocking::get(&obj.url)?;
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "\nfailed to fetch {}: HTTP {}",
+            obj.url.yellow(),
+            response.status()
+        ));
+    }
+    let bytes = response.bytes()?;
+    let tmp_path = std::env::temp_dir().join(&file_name);
+    std::fs::write(&tmp_path, &bytes)?;
+    let hash = dpm_core::hash_file(&tmp_path)?;
+    std::fs::remove_file(&tmp_path)?;
 
     let version_info = PackageVersionInfo {
         version: pk_info.version.clone(),
         kind: PackageKind::Prebuilt {
-            url: format!(
-                "https://github.com/Derrick-Program/DPM-Server/raw/main/Repo/{}.zip",
-                obj.project_name
-            ),
-            hash: dpm_core::hash_file(&package)?,
-            file_name: format!("{}.zip", pk_info.package_name),
+            url: obj.url.clone(),
+            hash,
+            file_name,
         },
         dependencies: pk_info.dependencies,
         entry: None,
@@ -169,59 +185,6 @@ fn fix_del(obj: &Del, repo: &mut RepoInfo) -> Result<()> {
         obj.project_name, version
     );
     Ok(())
-}
-
-pub fn repo_init(repo: &mut RepoInfo) -> Result<()> {
-    println!("Initializing Repo...");
-    let ret = find_zip_files_and_names_in_repo()?;
-    for (_, name) in ret {
-        let name_witout_zip = name.trim_end_matches(".zip");
-        let project = PROJECT_SRC.get().unwrap().join(name_witout_zip);
-        if !project.exists() {
-            return Err(anyhow::anyhow!(
-                "\nPackage: {} {}",
-                name_witout_zip.yellow(),
-                "Not found!".red()
-            ));
-        }
-        let pk_info: PackageInfo = JsonStorage::from_json(&project.join("packageInfo.json"))?;
-        let version_info = PackageVersionInfo {
-            version: pk_info.version.clone(),
-            kind: PackageKind::Prebuilt {
-                url: format!(
-                    "https://github.com/Derrick-Program/DPM-Server/raw/main/Repo/{}.zip",
-                    pk_info.package_name
-                ),
-                hash: pk_info.hash.clone(),
-                file_name: name.clone(),
-            },
-            dependencies: pk_info.dependencies,
-            entry: None,
-            description: Some(pk_info.description),
-        };
-        repo.add_package_version(name_witout_zip.to_string(), version_info)?;
-        println!("Done...");
-    }
-
-    Ok(())
-}
-
-fn find_zip_files_and_names_in_repo() -> Result<Vec<(PathBuf, String)>> {
-    let repo_dir = std::env::current_dir()?.join("Repo");
-    let mut zip_files = Vec::new();
-    if repo_dir.is_dir() {
-        for entry in read_dir(repo_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(std::ffi::OsStr::to_str) == Some("zip") {
-                if let Some(file_name) = path.file_name().and_then(std::ffi::OsStr::to_str) {
-                    zip_files.push((path.clone(), file_name.to_string()));
-                }
-            }
-        }
-    }
-
-    Ok(zip_files)
 }
 
 // fn resolve_dependencies_with_install(

@@ -54,6 +54,15 @@ pub enum FixAction {
 pub struct Add {
     /// Project Name
     pub project_name: String,
+    /// External URL hosting the prebuilt package archive. dpm-server
+    /// downloads it once to compute its blake3 hash — it does not keep a
+    /// copy. Must be https://.
+    #[arg(long)]
+    pub url: String,
+    /// Override the file name recorded in RepoInfo.json (defaults to the
+    /// URL's last path segment, e.g. "foo.zip" from ".../foo.zip")
+    #[arg(long)]
+    pub file_name: Option<String>,
 }
 
 // `disable_version_flag`: the derived positional `version` field's arg id collides
