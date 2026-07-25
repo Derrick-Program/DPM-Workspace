@@ -7,7 +7,7 @@ use std::{
     ffi::CStr,
     process::{Command, Stdio},
 };
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PackageManager {
     Apt,
     Dnf,
@@ -16,6 +16,109 @@ enum PackageManager {
     Zypper,
     Brew,
     Unknown,
+}
+
+/// One of the six actions `SystemAction` performs through the detected OS
+/// package manager. Kept as a value (not six near-identical methods each
+/// re-deriving their own match) so `PackageManager::command_for` is the one
+/// place that knows every manager's verbs.
+#[derive(Debug, Clone, Copy)]
+enum Verb {
+    Install,
+    Uninstall,
+    Search,
+    Upgrade,
+    UpdateIndex,
+    List,
+}
+
+impl Verb {
+    /// Short verb used in "Failed to {verb} package: {name}"-style messages.
+    fn description(self) -> &'static str {
+        match self {
+            Verb::Install => "install",
+            Verb::Uninstall => "remove",
+            Verb::Search => "search",
+            Verb::Upgrade => "upgrade",
+            Verb::UpdateIndex => "update package index",
+            Verb::List => "list packages",
+        }
+    }
+}
+
+impl PackageManager {
+    /// The (command, base-args) pair for one verb under this package
+    /// manager. Replaces what used to be six separate `match self.package_manager`
+    /// blocks (one per `SystemAction` method), each ending in its own
+    /// `Unknown => panic!("Unsupported package manager.")` — now a single
+    /// table, and `Unknown` returns an error instead of panicking.
+    ///
+    /// Yum previously got silently grouped with Dnf (running the `dnf`
+    /// binary) for uninstall/upgrade/update-index while install/search/list
+    /// correctly used `yum` — an inconsistency only visible once every verb
+    /// sat in one table side by side. Fixed here: Yum always uses `yum`.
+    fn command_for(self, verb: Verb) -> ClientResult<(&'static str, Vec<&'static str>)> {
+        use PackageManager::*;
+        use Verb::*;
+        let result: (&'static str, Vec<&'static str>) = match (self, verb) {
+            (Apt, Install) => ("apt-get", vec!["install", "-y"]),
+            (Apt, Uninstall) => ("apt-get", vec!["remove", "-y"]),
+            (Apt, Search) => ("apt-cache", vec!["search"]),
+            (Apt, Upgrade) => ("apt-get", vec!["install", "--only-upgrade", "-y"]),
+            (Apt, UpdateIndex) => ("apt-get", vec!["update"]),
+            (Apt, List) => ("apt", vec!["list", "--installed"]),
+
+            (Dnf, Install) => ("dnf", vec!["install", "-y"]),
+            (Dnf, Uninstall) => ("dnf", vec!["remove", "-y"]),
+            (Dnf, Search) => ("dnf", vec!["search"]),
+            (Dnf, Upgrade) => ("dnf", vec!["upgrade", "-y"]),
+            (Dnf, UpdateIndex) => ("dnf", vec!["makecache"]),
+            (Dnf, List) => ("dnf", vec!["list", "installed"]),
+
+            (Yum, Install) => ("yum", vec!["install", "-y"]),
+            (Yum, Uninstall) => ("yum", vec!["remove", "-y"]),
+            (Yum, Search) => ("yum", vec!["search"]),
+            (Yum, Upgrade) => ("yum", vec!["upgrade", "-y"]),
+            (Yum, UpdateIndex) => ("yum", vec!["makecache"]),
+            (Yum, List) => ("yum", vec!["list", "installed"]),
+
+            (Pacman, Install) => ("pacman", vec!["-S", "--noconfirm"]),
+            (Pacman, Uninstall) => ("pacman", vec!["-R"]),
+            (Pacman, Search) => ("pacman", vec!["-Ss"]),
+            (Pacman, Upgrade) => ("pacman", vec!["-Syu"]),
+            (Pacman, UpdateIndex) => ("pacman", vec!["-Sy"]),
+            (Pacman, List) => ("pacman", vec!["-Q"]),
+
+            (Zypper, Install) => ("zypper", vec!["install", "-y"]),
+            (Zypper, Uninstall) => ("zypper", vec!["remove", "-y"]),
+            (Zypper, Search) => ("zypper", vec!["search"]),
+            (Zypper, Upgrade) => ("zypper", vec!["update", "-y"]),
+            (Zypper, UpdateIndex) => ("zypper", vec!["refresh"]),
+            (Zypper, List) => ("zypper", vec!["search", "--installed-only"]),
+
+            (Brew, Install) => ("brew", vec!["install"]),
+            (Brew, Uninstall) => ("brew", vec!["uninstall"]),
+            (Brew, Search) => ("brew", vec!["search"]),
+            (Brew, Upgrade) => ("brew", vec!["upgrade"]),
+            (Brew, UpdateIndex) => ("brew", vec!["update"]),
+            (Brew, List) => ("brew", vec!["list"]),
+
+            (Unknown, verb) => {
+                let action = match verb {
+                    Install => "install packages",
+                    Uninstall => "remove packages",
+                    Search => "search for packages",
+                    Upgrade => "upgrade packages",
+                    UpdateIndex => "update the package index",
+                    List => "list installed packages",
+                };
+                return Err(ClientError::SystemError(format!(
+                    "cannot {action}: unrecognized or unsupported package manager"
+                )));
+            }
+        };
+        Ok(result)
+    }
 }
 #[derive(Debug)]
 pub struct SystemAction {
@@ -76,7 +179,9 @@ impl SystemController {
         err_message: &str,
     ) -> ClientResult<()> {
         if !(cfg!(target_os = "linux") || cfg!(target_os = "macos")) {
-            panic!("Unsupported OS");
+            return Err(ClientError::SystemError(
+                "unsupported OS: dpm only supports Linux and macOS".to_string(),
+            ));
         }
         let mut cmd = if SCOPE.get() == Some(&Scope::System) {
             let mut c = Command::new("sudo");
@@ -158,99 +263,40 @@ impl SystemAction {
         }
         PackageManager::Unknown
     }
-    pub fn install_package(&self, package_name: &str) -> ClientResult<()> {
-        let err = format!("Failed to install package: {}", package_name);
-        let err = err.as_str();
-        let (command, args) = match self.package_manager {
-            PackageManager::Apt => ("apt-get", vec!["install", "-y", package_name]),
-            PackageManager::Dnf => ("dnf", vec!["install", "-y", package_name]),
-            PackageManager::Yum => ("yum", vec!["install", "-y", package_name]),
-            PackageManager::Pacman => ("pacman", vec!["-S", "--noconfirm", package_name]),
-            PackageManager::Zypper => ("zypper", vec!["install", "-y", package_name]),
-            PackageManager::Brew => ("brew", vec!["install", package_name]),
-            PackageManager::Unknown => panic!("Unsupported package manager."),
+    /// Single seam every `SystemAction` method now funnels through, in
+    /// place of six copy-pasted matches on `self.package_manager`. Building
+    /// the command/args table (`PackageManager::command_for`) and running it
+    /// are the same two steps regardless of verb; only the verb and whether
+    /// it takes a package name differ.
+    fn run_verb(&self, verb: Verb, package_name: Option<&str>) -> ClientResult<()> {
+        let (command, mut args) = self.package_manager.command_for(verb)?;
+        if let Some(name) = package_name {
+            args.push(name);
+        }
+        let err = match package_name {
+            Some(name) => format!("Failed to {} package: {name}", verb.description()),
+            None => format!("Failed to {}", verb.description()),
         };
-        self.command_runner(command, args, err)?;
-        Ok(())
+        self.command_runner(command, args, &err)
+    }
+
+    pub fn install_package(&self, package_name: &str) -> ClientResult<()> {
+        self.run_verb(Verb::Install, Some(package_name))
     }
     pub fn update_package_index(&self) -> ClientResult<()> {
-        let err = "Failed to update package index";
-        let (command, args) = match self.package_manager {
-            PackageManager::Apt => ("apt-get", vec!["update"]),
-            PackageManager::Dnf | PackageManager::Yum => ("dnf", vec!["makecache"]),
-            PackageManager::Pacman => ("pacman", vec!["-Sy"]),
-            PackageManager::Zypper => ("zypper", vec!["refresh"]),
-            PackageManager::Brew => ("brew", vec!["update"]),
-            PackageManager::Unknown => panic!("Unsupported package manager."),
-        };
-        self.command_runner(command, args, err)?;
-        Ok(())
+        self.run_verb(Verb::UpdateIndex, None)
     }
     pub fn uninstall_package(&self, package_name: &str) -> ClientResult<()> {
-        let err = format!("Failed to remove package: {}", package_name);
-        let err = err.as_str();
-        let (command, args) = match self.package_manager {
-            PackageManager::Apt => ("apt-get", vec!["remove", "-y", package_name]),
-            PackageManager::Dnf | PackageManager::Yum => {
-                ("dnf", vec!["remove", "-y", package_name])
-            }
-            PackageManager::Pacman => ("pacman", vec!["-R", package_name]),
-            PackageManager::Zypper => ("zypper", vec!["remove", "-y", package_name]),
-            PackageManager::Brew => ("brew", vec!["uninstall", package_name]),
-            PackageManager::Unknown => panic!("Unsupported package manager."),
-        };
-        self.command_runner(command, args, err)?;
-        Ok(())
+        self.run_verb(Verb::Uninstall, Some(package_name))
     }
     pub fn search_package(&self, package_name: &str) -> ClientResult<()> {
-        let err = format!("Failed to search package: {}", package_name);
-        let err = err.as_str();
-        let (command, args) = match self.package_manager {
-            PackageManager::Apt => ("apt-cache", vec!["search", package_name]),
-            PackageManager::Dnf => ("dnf", vec!["search", package_name]),
-            PackageManager::Yum => ("yum", vec!["search", package_name]),
-            PackageManager::Pacman => ("pacman", vec!["-Ss", package_name]),
-            PackageManager::Zypper => ("zypper", vec!["search", package_name]),
-            PackageManager::Brew => ("brew", vec!["search", package_name]),
-            PackageManager::Unknown => panic!("Unsupported package manager."),
-        };
-        self.command_runner(command, args, err)?;
-        Ok(())
+        self.run_verb(Verb::Search, Some(package_name))
     }
     pub fn upgrade_package(&self, package_name: &str) -> ClientResult<()> {
-        let err = format!("Failed to upgrade package: {}", package_name);
-        let err = err.as_str();
-        let (command, args) = match self.package_manager {
-            PackageManager::Apt => (
-                "apt-get",
-                vec!["install", "--only-upgrade", "-y", package_name],
-            ),
-            PackageManager::Dnf | PackageManager::Yum => {
-                ("dnf", vec!["upgrade", "-y", package_name])
-            }
-            PackageManager::Pacman => ("pacman", vec!["-Syu", package_name]),
-            PackageManager::Zypper => ("zypper", vec!["update", "-y", package_name]),
-            PackageManager::Brew => ("brew", vec!["upgrade", package_name]),
-            PackageManager::Unknown => panic!("Unsupported package manager."),
-        };
-        self.command_runner(command, args, err)?;
-        Ok(())
+        self.run_verb(Verb::Upgrade, Some(package_name))
     }
-
     pub fn list_packages(&self) -> ClientResult<()> {
-        let err = "Failed to list packages";
-        let (command, args) = match self.package_manager {
-            PackageManager::Apt => ("apt", vec!["list", "--installed"]),
-            PackageManager::Dnf => ("dnf", vec!["list", "installed"]),
-            PackageManager::Yum => ("yum", vec!["list", "installed"]),
-            PackageManager::Pacman => ("pacman", vec!["-Q"]),
-            PackageManager::Zypper => ("zypper", vec!["search", "--installed-only"]),
-            PackageManager::Brew => ("brew", vec!["list"]),
-            PackageManager::Unknown => panic!("Unsupported package manager."),
-        };
-
-        self.command_runner(command, args, err)?;
-        Ok(())
+        self.run_verb(Verb::List, None)
     }
 
     fn command_runner(
@@ -286,5 +332,68 @@ impl SystemAction {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_manager_errors_instead_of_panicking() {
+        for verb in [
+            Verb::Install,
+            Verb::Uninstall,
+            Verb::Search,
+            Verb::Upgrade,
+            Verb::UpdateIndex,
+            Verb::List,
+        ] {
+            assert!(PackageManager::Unknown.command_for(verb).is_err());
+        }
+    }
+
+    #[test]
+    fn yum_always_uses_the_yum_binary() {
+        // Regression test: uninstall/upgrade/update-index used to be grouped
+        // with Dnf and silently ran the `dnf` binary for a Yum-detected
+        // system. Every verb must use "yum" now.
+        for verb in [
+            Verb::Install,
+            Verb::Uninstall,
+            Verb::Search,
+            Verb::Upgrade,
+            Verb::UpdateIndex,
+            Verb::List,
+        ] {
+            let (command, _) = PackageManager::Yum.command_for(verb).unwrap();
+            assert_eq!(command, "yum", "Yum + {verb:?} used '{command}' instead");
+        }
+    }
+
+    #[test]
+    fn every_known_manager_has_all_six_verbs() {
+        for manager in [
+            PackageManager::Apt,
+            PackageManager::Dnf,
+            PackageManager::Yum,
+            PackageManager::Pacman,
+            PackageManager::Zypper,
+            PackageManager::Brew,
+        ] {
+            for verb in [
+                Verb::Install,
+                Verb::Uninstall,
+                Verb::Search,
+                Verb::Upgrade,
+                Verb::UpdateIndex,
+                Verb::List,
+            ] {
+                assert!(
+                    manager.command_for(verb).is_ok(),
+                    "{manager:?} is missing a mapping for {verb:?}"
+                );
+            }
+        }
     }
 }
