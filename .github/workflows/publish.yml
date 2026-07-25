@@ -1,0 +1,48 @@
+name: Publish sanity check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/dpm-server/RepoInfo.json'
+
+permissions:
+  contents: read
+
+jobs:
+  sanity-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: RepoInfo.json is well-formed JSON with the expected shape
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, sys
+
+          with open("crates/dpm-server/RepoInfo.json") as f:
+              data = json.load(f)
+
+          packages = data.get("packages")
+          if not isinstance(packages, dict):
+              print("::error::RepoInfo.json's top-level 'packages' key is missing or not an object")
+              sys.exit(1)
+
+          for name, versions in packages.items():
+              if not isinstance(versions, list) or not versions:
+                  print(f"::error::{name} must map to a non-empty array of versions")
+                  sys.exit(1)
+              seen = set()
+              for v in versions:
+                  ver = v.get("version")
+                  if ver in seen:
+                      print(f"::error::{name} has a duplicate version entry: {ver}")
+                      sys.exit(1)
+                  seen.add(ver)
+                  if v.get("kind") not in ("prebuilt", "source"):
+                      print(f"::error::{name}@{ver} has an invalid or missing 'kind'")
+                      sys.exit(1)
+
+          print(f"OK: {len(packages)} package(s), all well-formed")
+          PY

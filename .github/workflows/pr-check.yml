@@ -1,0 +1,65 @@
+name: PR Check
+
+on:
+  pull_request:
+    paths:
+      - 'crates/dpm-server/packages/**'
+      - 'crates/dpm-server/RepoInfo.json'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Every changed package has a packageInfo.json
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "origin/$BASE_REF...HEAD" -- crates/dpm-server/packages/ \
+            | awk -F/ '{print $4}' | sort -u > /tmp/changed_packages.txt
+          cat /tmp/changed_packages.txt
+          while read -r pkg; do
+            [ -z "$pkg" ] && continue
+            info="crates/dpm-server/packages/$pkg/packageInfo.json"
+            if [ ! -f "$info" ]; then
+              echo "::error::$info is missing"
+              exit 1
+            fi
+          done < /tmp/changed_packages.txt
+
+      - name: Published versions in RepoInfo.json are immutable
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git show "origin/$BASE_REF:crates/dpm-server/RepoInfo.json" \
+            > /tmp/base_repoinfo.json 2>/dev/null || echo '{"packages":{}}' > /tmp/base_repoinfo.json
+          python3 - <<'PY'
+          import json, sys
+
+          with open("/tmp/base_repoinfo.json") as f:
+              base = json.load(f).get("packages", {})
+          with open("crates/dpm-server/RepoInfo.json") as f:
+              head = json.load(f).get("packages", {})
+
+          errors = []
+          for name, base_versions in base.items():
+              head_by_version = {v["version"]: v for v in head.get(name, [])}
+              for bv in base_versions:
+                  hv = head_by_version.get(bv["version"])
+                  if hv is not None and hv != bv:
+                      errors.append(f"{name}@{bv['version']} was modified — published versions are immutable")
+
+          if errors:
+              for e in errors:
+                  print(f"::error::{e}")
+              sys.exit(1)
+          print("OK: no published version was modified")
+          PY
