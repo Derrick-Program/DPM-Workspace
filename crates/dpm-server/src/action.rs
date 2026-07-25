@@ -114,43 +114,63 @@ fn fix_add(obj: &Add, repo: &mut RepoInfo) -> Result<()> {
     let path = PROJECT_SRC.get().unwrap().join(&obj.project_name);
     let pk_info: PackageInfo = JsonStorage::from_json(&path.join("packageInfo.json"))?;
 
-    if !obj.url.starts_with("https://") {
-        return Err(anyhow::anyhow!(
-            "\n--url {} {}",
-            obj.url.yellow(),
-            "must use https://".red()
-        ));
-    }
-    let file_name = obj
-        .file_name
-        .clone()
-        .or_else(|| obj.url.rsplit('/').next().map(|s| s.to_string()))
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!("could not derive a file name from --url; pass --file-name explicitly")
-        })?;
+    let kind = match (&obj.url, &obj.build) {
+        (Some(url), None) => {
+            if !url.starts_with("https://") {
+                return Err(anyhow::anyhow!(
+                    "\n--url {} {}",
+                    url.yellow(),
+                    "must use https://".red()
+                ));
+            }
+            let file_name = obj
+                .file_name
+                .clone()
+                .or_else(|| url.rsplit('/').next().map(|s| s.to_string()))
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "could not derive a file name from --url; pass --file-name explicitly"
+                    )
+                })?;
 
-    let response = reqwest::blocking::get(&obj.url)?;
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "\nfailed to fetch {}: HTTP {}",
-            obj.url.yellow(),
-            response.status()
-        ));
-    }
-    let bytes = response.bytes()?;
-    let tmp_path = std::env::temp_dir().join(&file_name);
-    std::fs::write(&tmp_path, &bytes)?;
-    let hash = dpm_core::hash_file(&tmp_path)?;
-    std::fs::remove_file(&tmp_path)?;
+            let response = reqwest::blocking::get(url)?;
+            if !response.status().is_success() {
+                return Err(anyhow::anyhow!(
+                    "\nfailed to fetch {}: HTTP {}",
+                    url.yellow(),
+                    response.status()
+                ));
+            }
+            let bytes = response.bytes()?;
+            let tmp_path = std::env::temp_dir().join(&file_name);
+            std::fs::write(&tmp_path, &bytes)?;
+            let hash = dpm_core::hash_file(&tmp_path)?;
+            std::fs::remove_file(&tmp_path)?;
+
+            PackageKind::Prebuilt {
+                url: url.clone(),
+                hash,
+                file_name,
+            }
+        }
+        (None, Some(build)) => PackageKind::Source {
+            build: build.clone(),
+        },
+        (Some(_), Some(_)) => unreachable!("clap's conflicts_with already rejects this"),
+        (None, None) => {
+            return Err(anyhow::anyhow!(
+                "\nfix add {} needs exactly one of {} or {}",
+                obj.project_name.yellow(),
+                "--url".green(),
+                "--build".green()
+            ));
+        }
+    };
 
     let version_info = PackageVersionInfo {
         version: pk_info.version.clone(),
-        kind: PackageKind::Prebuilt {
-            url: obj.url.clone(),
-            hash,
-            file_name,
-        },
+        kind,
         dependencies: pk_info.dependencies,
         entry: None,
         description: Some(pk_info.description),

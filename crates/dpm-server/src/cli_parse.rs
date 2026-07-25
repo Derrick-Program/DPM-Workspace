@@ -54,15 +54,20 @@ pub enum FixAction {
 pub struct Add {
     /// Project Name
     pub project_name: String,
-    /// External URL hosting the prebuilt package archive. dpm-server
-    /// downloads it once to compute its blake3 hash — it does not keep a
-    /// copy. Must be https://.
-    #[arg(long)]
-    pub url: String,
-    /// Override the file name recorded in RepoInfo.json (defaults to the
-    /// URL's last path segment, e.g. "foo.zip" from ".../foo.zip")
+    /// External URL hosting the prebuilt package archive (mutually exclusive
+    /// with --build). dpm-server downloads it once to compute its blake3
+    /// hash — it does not keep a copy. Must be https://.
+    #[arg(long, conflicts_with = "build")]
+    pub url: Option<String>,
+    /// Override the file name recorded in RepoInfo.json (only meaningful
+    /// with --url; defaults to the URL's last path segment)
     #[arg(long)]
     pub file_name: Option<String>,
+    /// Shell command clients run locally to build this package from source
+    /// (mutually exclusive with --url). $OUT will point at the install
+    /// destination when clients actually run it (Phase 4 client-side work).
+    #[arg(long, conflicts_with = "url")]
+    pub build: Option<String>,
 }
 
 // `disable_version_flag`: the derived positional `version` field's arg id collides
