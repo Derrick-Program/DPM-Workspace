@@ -448,26 +448,31 @@ impl ActionInfo {
 
     pub async fn upgrade_self(&self) -> ClientResult<()> {
         let verbose = self.verbose;
-        let status_result = tokio::task::spawn_blocking(move || {
-            let build_result = self_update::backends::github::Update::configure()
-                .repo_owner("Derrick-Program")
-                .repo_name("DPM-Workspace")
-                .bin_name("dpm")
-                .show_download_progress(verbose)
-                .show_output(verbose)
-                .current_version(env!("CARGO_PKG_VERSION"))
-                .verifying_keys([*RELEASE_SIGNING_PUBLIC_KEY])
-                .build();
+        // `self_update`'s client is a blocking `reqwest::blocking::Client`, which
+        // panics if built directly on a thread already inside a tokio runtime
+        // (this method is called from `lib.rs::entry()`, which is). Isolate it
+        // on a blocking-pool thread instead.
+        type UpdateResult = Result<self_update::Status, self_update::errors::Error>;
+        let build_result: Result<UpdateResult, ClientError> =
+            tokio::task::spawn_blocking(move || {
+                self_update::backends::github::Update::configure()
+                    .repo_owner("Derrick-Program")
+                    .repo_name("DPM-Workspace")
+                    .bin_name("dpm")
+                    .show_download_progress(verbose)
+                    .show_output(verbose)
+                    .current_version(env!("CARGO_PKG_VERSION"))
+                    .verifying_keys([*RELEASE_SIGNING_PUBLIC_KEY])
+                    .build()
+                    .map_err(|e| {
+                        ClientError::SystemError(format!("failed to configure self-update: {e}"))
+                    })
+                    .map(|update| update.update())
+            })
+            .await
+            .map_err(|e| ClientError::SystemError(format!("update task failed: {e}")))?;
 
-            match build_result {
-                Ok(update) => update.update(),
-                Err(e) => Err(e),
-            }
-        })
-        .await
-        .map_err(|e| ClientError::SystemError(format!("update task failed: {e}")))?;
-
-        match status_result {
+        match build_result? {
             Ok(self_update::Status::UpToDate(v)) => {
                 println!("{} dpm is already up to date (v{v})", "==>".green());
             }

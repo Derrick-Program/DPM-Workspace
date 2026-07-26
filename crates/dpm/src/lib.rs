@@ -86,7 +86,9 @@ pub async fn entry(ctx: Context, config: Cli) -> ClientResult<()> {
                 .await?
         }
         Some(Commands::UpgradeSelf { verbose }) => {
-            ActionInfo::new(ctx.clone(), vec![], verbose, setting_config).upgrade_self().await?
+            ActionInfo::new(ctx.clone(), vec![], verbose, setting_config)
+                .upgrade_self()
+                .await?
         }
         Some(Commands::Source { action }) => {
             ActionInfo::new(ctx.clone(), vec![], false, setting_config)
