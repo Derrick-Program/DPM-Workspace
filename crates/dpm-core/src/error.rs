@@ -32,6 +32,9 @@ pub enum CoreError {
     #[error("Security error: {0}")]
     SecurityError(String),
 
+    #[error("Signature verification failed: {0}")]
+    SignatureInvalid(String),
+
     #[error("Ambiguous package '{0}': exists in multiple sources, specify source/name")]
     AmbiguousPackage(String),
 }

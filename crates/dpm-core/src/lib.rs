@@ -1,6 +1,8 @@
 mod error;
 mod zip_file;
 pub use error::*;
+pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, Verifier};
 use serde::{Deserialize, Serialize};
 use serde_json::to_writer_pretty;
 use std::{collections::HashMap, io::Read, path::Path};
@@ -13,6 +15,71 @@ pub fn hash_file(path: &Path) -> CoreResult<String> {
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
     Ok(blake3::hash(&buffer).to_hex().to_string())
+}
+
+/// 對任意 bytes 算 blake3 hash,回傳小寫十六進位字串——跟 [`hash_file`] 同一個
+/// 演算法,只是輸入不是檔案而是記憶體內容(`kind: source` 套件的
+/// `build_command` + commit hash 組合就是這樣算的,沒有對應的實體檔案可以餵
+/// 給 `hash_file`)。
+pub fn hash_bytes(data: &[u8]) -> String {
+    blake3::hash(data).to_hex().to_string()
+}
+
+/// 產生一把新的 ed25519 簽章金鑰對——`dpm-server keygen` 用。簽章本身
+/// (`sign_hash`)是確定性的,不需要隨機性,只有「產生新金鑰」這一步需要
+/// CSPRNG,直接用 `getrandom` 填 32 bytes seed 建構 `SigningKey`,不透過
+/// `SigningKey::generate`(那需要額外開 `ed25519-dalek` 的 `rand_core`
+/// feature 並拉近一個版本可能跟其他依賴打架的 `rand_core` crate——這裡不需要)。
+pub fn generate_signing_key() -> CoreResult<SigningKey> {
+    let mut secret = [0u8; 32];
+    getrandom::getrandom(&mut secret)
+        .map_err(|e| CoreError::SecurityError(format!("failed to generate random key: {e}")))?;
+    Ok(SigningKey::from_bytes(&secret))
+}
+
+/// 把讀出來的 32 bytes 私鑰檔案內容還原成 `SigningKey`。
+pub fn signing_key_from_bytes(bytes: &[u8]) -> CoreResult<SigningKey> {
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| CoreError::SignatureInvalid("private key must be 32 bytes".to_string()))?;
+    Ok(SigningKey::from_bytes(&arr))
+}
+
+/// 把讀出來的 32 bytes 公鑰檔案內容(`keys/<author_id>.pub`)還原成
+/// `VerifyingKey`。`dpm-server fix add`(讀本機 `keys/` 目錄)、`dpm`
+/// client(讀從官方 repo 抓下來的 raw bytes)共用同一份實作。
+pub fn verifying_key_from_bytes(bytes: &[u8]) -> CoreResult<VerifyingKey> {
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| CoreError::SignatureInvalid("public key must be 32 bytes".to_string()))?;
+    VerifyingKey::from_bytes(&arr).map_err(|e| CoreError::SignatureInvalid(e.to_string()))
+}
+
+/// 對一個 hex 編碼的 hash 字串(`packageInfo.json.hash`/`PackageKind` 的
+/// hash 欄位本身,不是重新雜湊一次)簽章,回傳 hex 編碼的簽章字串。
+pub fn sign_hash(signing_key: &SigningKey, hash_hex: &str) -> String {
+    let sig: Signature = signing_key.sign(hash_hex.as_bytes());
+    hex::encode(sig.to_bytes())
+}
+
+/// 驗證 `signature_hex` 是否是 `verifying_key` 對 `hash_hex` 的合法簽章。
+/// hex 格式錯誤、簽章長度不對、驗證不過——任何一步失敗都回傳同一種
+/// `CoreError::SignatureInvalid`,呼叫端不需要分辨失敗原因,一律視為
+/// 「這個簽章不可信」。
+pub fn verify_hash_signature(
+    verifying_key: &VerifyingKey,
+    hash_hex: &str,
+    signature_hex: &str,
+) -> CoreResult<()> {
+    let sig_bytes = hex::decode(signature_hex)
+        .map_err(|e| CoreError::SignatureInvalid(format!("signature is not valid hex: {e}")))?;
+    let sig_bytes: [u8; 64] = sig_bytes
+        .try_into()
+        .map_err(|_| CoreError::SignatureInvalid("signature must be 64 bytes".to_string()))?;
+    let signature = Signature::from_bytes(&sig_bytes);
+    verifying_key
+        .verify(hash_hex.as_bytes(), &signature)
+        .map_err(|e| CoreError::SignatureInvalid(e.to_string()))
 }
 
 /// `dpm`、`dpm-server` 兩個 CLI 的 clap 配色主題,共用同一份實作。
