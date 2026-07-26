@@ -11,6 +11,8 @@ pub enum Commands {
     Init(Init),
     /// Generate an ed25519 signing key pair for a package author
     Keygen(Keygen),
+    /// Sign a package's packageInfo.json hash with its author's private key
+    Sign(Sign),
 }
 
 #[derive(Args, Debug)]
@@ -117,4 +119,10 @@ pub struct Keygen {
     /// Overwrite an existing key pair for this author
     #[arg(long)]
     pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct Sign {
+    /// Project Name
+    pub name: String,
 }

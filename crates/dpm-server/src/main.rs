@@ -48,6 +48,7 @@ fn main() -> Result<()> {
         Commands::Build(obj) => build(obj, &project_src, &repo_dir)?,
         Commands::Init(obj) => init(obj, &project_src, &keys_dir)?,
         Commands::Keygen(obj) => keygen(obj, &keys_dir)?,
+        Commands::Sign(obj) => sign(obj, &project_src, &keys_dir)?,
     }
     JsonStorage::to_json(&repo_info, &software_repo_info)?;
     Ok(())

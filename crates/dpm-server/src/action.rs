@@ -141,6 +141,33 @@ fn source_repo_commit_hash(project_path: &Path) -> ServerResult<String> {
     Ok(commit.id().to_string())
 }
 
+pub fn sign(obj: &Sign, project_src: &Path, keys_dir: &Path) -> ServerResult<()> {
+    let path = project_src.join(&obj.name);
+    let info_path = path.join("packageInfo.json");
+    let mut package_info: PackageInfo = JsonStorage::from_json(&info_path)?;
+    let author = package_info.author.clone().ok_or_else(|| {
+        ServerError::ValidationError(format!(
+            "{} has no author recorded; run `dpm-server init --author <id>` first",
+            obj.name
+        ))
+    })?;
+
+    let priv_path = keys_dir.join(format!("{author}.priv"));
+    let priv_bytes = std::fs::read(&priv_path).map_err(|e| {
+        ServerError::ValidationError(format!(
+            "could not read private key for author '{author}' at {}: {e}",
+            priv_path.display()
+        ))
+    })?;
+    let signing_key = dpm_core::signing_key_from_bytes(&priv_bytes)?;
+
+    let signature = dpm_core::sign_hash(&signing_key, &package_info.hash);
+    package_info.signature = Some(signature);
+    JsonStorage::to_json(&package_info, &info_path)?;
+    println!("Signed {} (author: {author})", obj.name);
+    Ok(())
+}
+
 pub fn build(obj: &Build, project_src: &Path, repo_dir: &Path) -> ServerResult<()> {
     let project_path = project_src.join(&obj.package_name);
     if !project_path.exists() {
@@ -954,5 +981,111 @@ mod tests {
         assert_eq!(package_info.hash, expected_hash);
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sign_writes_a_verifiable_signature() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-sign-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+        let keys_dir = project_src.join("keys");
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+        init(
+            &Init {
+                name: "demo-pkg".to_string(),
+                entry: "main.sh".to_string(),
+                ver: "0.1.0".to_string(),
+                description: "a demo package".to_string(),
+                author: "alice".to_string(),
+            },
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap();
+        hash(
+            &Hash {
+                package_name: "demo-pkg".to_string(),
+                build: None,
+            },
+            &project_src,
+            &project_src.join("unused-repo-dir"),
+        )
+        .unwrap();
+
+        sign(
+            &Sign {
+                name: "demo-pkg".to_string(),
+            },
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap();
+
+        let package_info: PackageInfo =
+            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json"))
+                .unwrap();
+        let signature = package_info.signature.expect("sign must set a signature");
+
+        let pubkey_bytes = std::fs::read(keys_dir.join("alice.pub")).unwrap();
+        let verifying_key = dpm_core::verifying_key_from_bytes(&pubkey_bytes).unwrap();
+        assert!(
+            dpm_core::verify_hash_signature(&verifying_key, &package_info.hash, &signature)
+                .is_ok(),
+            "the written signature must verify against the package's own hash and author's public key"
+        );
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    #[test]
+    fn sign_rejects_a_package_with_no_recorded_author() {
+        // 直接手刻一個沒有 author 的 packageInfo.json,模擬 init 之前手動
+        // 亂改檔案的狀況(舊格式,或不小心刪掉了 author 欄位)。
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-sign-no-author-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pkg_dir = project_src.join("demo-pkg");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        let package_info = PackageInfo::new(
+            "demo-pkg".to_string(),
+            "main.sh".to_string(),
+            "0.1.0".to_string(),
+            "a demo package".to_string(),
+            "0".repeat(64),
+            None,
+            None,
+        );
+        JsonStorage::to_json(&package_info, &pkg_dir.join("packageInfo.json")).unwrap();
+
+        let keys_dir = project_src.join("keys");
+        let err = sign(
+            &Sign {
+                name: "demo-pkg".to_string(),
+            },
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ServerError::ValidationError(_)));
+
+        std::fs::remove_dir_all(&project_src).ok();
     }
 }
