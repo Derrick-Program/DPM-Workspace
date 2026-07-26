@@ -444,6 +444,32 @@ impl ActionInfo {
     }
 }
 
+/// `self_update::errors::Error::NoSignatures`/`Error::Signature` 都代表下載
+/// 回來的 release archive 沒有通過 `RELEASE_SIGNING_PUBLIC_KEY` 的 zipsign
+/// 驗證——這是安全相關的失敗,`upgrade_self` 會給它一個獨立的 `INSECURE:`
+/// 開頭訊息,跟一般網路/查詢錯誤分開處理。
+#[allow(dead_code)]
+fn is_signature_error(e: &self_update::errors::Error) -> bool {
+    matches!(
+        e,
+        self_update::errors::Error::NoSignatures(_) | self_update::errors::Error::Signature(_)
+    )
+}
+
+/// `self_update::errors::Error::Io` 底下包著
+/// `io::ErrorKind::PermissionDenied` 代表目前使用者對 `dpm` 執行檔所在位置
+/// 沒有寫入權限(例如執行檔是被其他使用者以 system-wide 方式裝的)。
+/// `upgrade_self` 會在這個錯誤後面補一句 `sudo dpm upgrade-self` 提示,
+/// 而不是直接印出原始的 OS 錯誤訊息。
+#[allow(dead_code)]
+fn is_permission_denied(e: &self_update::errors::Error) -> bool {
+    matches!(
+        e,
+        self_update::errors::Error::Io(io_err)
+            if io_err.kind() == std::io::ErrorKind::PermissionDenied
+    )
+}
+
 /// 每個安裝好的套件在 `install_dir` 底下都是一個獨立子目錄(見 `place_package`),
 /// 所以「已安裝套件」= `install_dir` 的頂層子目錄名稱,不需要遞迴進每個套件內部
 /// 的檔案。`install_dir` 在第一次安裝前不存在是正常狀態,回傳空清單而不是錯誤。
@@ -491,4 +517,50 @@ mod installed_package_names_tests {
             vec!["alpha".to_string(), "zeta".to_string()]
         );
     }
+}
+
+#[cfg(test)]
+mod upgrade_self_tests {
+    use super::*;
+    use self_update::errors::Error;
+    use std::io;
+
+    #[test]
+    fn permission_denied_io_error_is_detected() {
+        let err = Error::Io(io::Error::new(io::ErrorKind::PermissionDenied, "denied"));
+        assert!(is_permission_denied(&err));
+    }
+
+    #[test]
+    fn not_found_io_error_is_not_permission_denied() {
+        let err = Error::Io(io::Error::new(io::ErrorKind::NotFound, "missing"));
+        assert!(!is_permission_denied(&err));
+    }
+
+    #[test]
+    fn non_io_error_is_not_permission_denied() {
+        let err = Error::Network("boom".to_string());
+        assert!(!is_permission_denied(&err));
+    }
+
+    #[test]
+    fn no_signatures_error_is_a_signature_error() {
+        let err = Error::NoSignatures(self_update::ArchiveKind::Tar(None));
+        assert!(is_signature_error(&err));
+    }
+
+    #[test]
+    fn non_signature_error_is_not_a_signature_error() {
+        let err = Error::Network("boom".to_string());
+        assert!(!is_signature_error(&err));
+    }
+
+    // `Error::Signature(zipsign_api::ZipsignError)` isn't covered by its own
+    // fixture here: `zipsign_api` is only a transitive dependency (pulled in
+    // by self_update's `signatures` feature) and isn't re-exported by
+    // self_update, so building one would mean adding zipsign_api as a direct
+    // dev-dependency solely to construct a test value. The `matches!` arm in
+    // `is_signature_error` covers both `NoSignatures` and `Signature` as one
+    // pattern — `no_signatures_error_is_a_signature_error` above exercises
+    // that same arm.
 }
