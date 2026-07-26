@@ -43,7 +43,7 @@ fn main() -> Result<()> {
         });
     }
     match &cli.command {
-        Commands::Hash(obj) => hash(obj, &project_src)?,
+        Commands::Hash(obj) => hash(obj, &project_src, &repo_dir)?,
         Commands::Fix(obj) => fix(obj, &mut repo_info, &project_src)?,
         Commands::Build(obj) => build(obj, &project_src, &repo_dir)?,
         Commands::Init(obj) => init(obj, &project_src, &keys_dir)?,

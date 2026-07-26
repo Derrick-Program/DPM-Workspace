@@ -17,6 +17,11 @@ pub enum Commands {
 pub struct Hash {
     /// Project Name
     pub package_name: String,
+    /// Build command for a `kind: source` package — when given, computes a
+    /// signable hash from this command + the current git HEAD commit
+    /// instead of walking `packages/<name>/`'s files.
+    #[arg(long)]
+    pub build: Option<String>,
 }
 
 #[derive(Args, Debug)]

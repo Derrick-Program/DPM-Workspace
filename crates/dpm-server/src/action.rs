@@ -53,51 +53,92 @@ pub fn keygen(obj: &Keygen, keys_dir: &Path) -> ServerResult<()> {
     Ok(())
 }
 
-pub fn hash(obj: &Hash, project_src: &Path) -> ServerResult<()> {
+pub fn hash(obj: &Hash, project_src: &Path, repo_dir: &Path) -> ServerResult<()> {
     let project_path = project_src.join(&obj.package_name);
-    let hashfile = &project_path.join("hashes.json");
-    let project_info = &project_path.join("packageInfo.json");
-    let mut hashes: HashMap<String, String> =
-        JsonStorage::from_json(hashfile).unwrap_or_else(|_| HashMap::new());
-    let mut counter: i32 = 0;
     if !project_path.exists() {
         return Err(ServerError::Core(CoreError::PackageNotFound(
             obj.package_name.clone(),
         )));
     }
-    for entry in WalkDir::new(&project_path) {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() && path != hashfile {
+    let project_info = &project_path.join("packageInfo.json");
+
+    let hash = if let Some(build_command) = &obj.build {
+        // kind: source——沒有下載內容可雜湊,綁定 build_command 本身跟目前
+        // git HEAD commit,讓 Source 套件也有東西可以簽、可以驗。
+        let commit = source_repo_commit_hash(&project_path)?;
+        dpm_core::hash_bytes(format!("{build_command}\n{commit}").as_bytes())
+    } else {
+        let zip_path = repo_dir.join(format!("{}.zip", obj.package_name));
+        if zip_path.exists() {
+            // kind: prebuilt,且 `dpm-server build` 已經跑過——直接雜湊那個
+            // zip,讓「簽的 hash」等於「fix add 之後 client 會拿去驗證下載
+            // 內容的 hash」,兩者是同一個值。
+            dpm_core::hash_file(&zip_path)?
+        } else {
+            // 還沒 build(或者根本不是要發布的 prebuilt 套件)——退回舊行為:
+            // 逐檔雜湊整個專案目錄寫進 hashes.json。
+            let hashfile = &project_path.join("hashes.json");
+            let mut hashes: HashMap<String, String> =
+                JsonStorage::from_json(hashfile).unwrap_or_else(|_| HashMap::new());
+            let mut counter: i32 = 0;
+            for entry in WalkDir::new(&project_path) {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_file() && path != hashfile {
+                    counter += 1;
+                    let file_hash = dpm_core::hash_file(path)?;
+                    let relative_path = path.strip_prefix(&project_path).unwrap_or(path);
+                    println!(
+                        "{} {} {} {}",
+                        counter,
+                        relative_path.display().to_string().yellow(),
+                        "===>".green(),
+                        file_hash.bold().blue(),
+                    );
+                    hashes.insert(relative_path.display().to_string(), file_hash);
+                }
+            }
+            JsonStorage::to_json(&hashes, hashfile)?;
             counter += 1;
-            let hash = dpm_core::hash_file(path)?;
-            let relative_path = path.strip_prefix(&project_path).unwrap_or(path);
+            let hashes_json_hash = dpm_core::hash_file(hashfile)?;
             println!(
                 "{} {} {} {}",
                 counter,
-                relative_path.display().to_string().yellow(),
+                "hashes.json".yellow(),
                 "===>".green(),
-                hash.bold().blue(),
+                hashes_json_hash.bold().blue(),
             );
-            hashes.insert(relative_path.display().to_string(), hash);
+            hashes.insert("hashes.json".to_string(), hashes_json_hash.clone());
+            JsonStorage::to_json(&hashes, hashfile)?;
+            hashes_json_hash
         }
-    }
-    JsonStorage::to_json(&hashes, hashfile)?;
-    counter += 1;
-    let hash = dpm_core::hash_file(hashfile)?;
-    println!(
-        "{} {} {} {}",
-        counter,
-        "hashes.json".yellow(),
-        "===>".green(),
-        hash.bold().blue(),
-    );
-    hashes.insert("hashes.json".to_string(), hash.clone());
-    JsonStorage::to_json(&hashes, hashfile)?;
+    };
+
     let mut package_info: PackageInfo = JsonStorage::from_json(project_info)?;
     package_info.hash = hash;
     JsonStorage::to_json(&package_info, project_info)?;
     Ok(())
+}
+
+/// 解析出包含 `project_path` 的 git repo 目前 HEAD 的 commit hash(從
+/// `project_path` 往上找 `.git`,所以不管 `dpm-server` 是從 repo 根目錄還是
+/// 子目錄執行都找得到)。用來把一個 `kind: source` 套件簽出來的 hash 綁定
+/// 在「發布當下原始碼樹的確切狀態」——光是 `build_command` 字串本身不能防止
+/// 有人在不改 build 指令的情況下換掉底下的原始碼。
+fn source_repo_commit_hash(project_path: &Path) -> ServerResult<String> {
+    let repo = git2::Repository::discover(project_path).map_err(|e| {
+        ServerError::ValidationError(format!(
+            "could not find a git repository containing {}: {e}",
+            project_path.display()
+        ))
+    })?;
+    let head = repo
+        .head()
+        .map_err(|e| ServerError::ValidationError(format!("could not resolve HEAD: {e}")))?;
+    let commit = head.peel_to_commit().map_err(|e| {
+        ServerError::ValidationError(format!("could not resolve HEAD commit: {e}"))
+    })?;
+    Ok(commit.id().to_string())
 }
 
 pub fn build(obj: &Build, project_src: &Path, repo_dir: &Path) -> ServerResult<()> {
@@ -396,8 +437,10 @@ mod tests {
         hash(
             &Hash {
                 package_name: "demo-pkg".to_string(),
+                build: None,
             },
             &project_src,
+            &project_src.join("unused-repo-dir"),
         )
         .unwrap();
 
@@ -747,5 +790,169 @@ mod tests {
         assert_eq!(mode, 0o600);
 
         std::fs::remove_dir_all(&keys_dir).ok();
+    }
+
+    /// 在 `project_src` 這個目錄本身初始化一個 git repo 並 commit 一次
+    /// (`--build` 模式的 `source_repo_commit_hash` 需要能在 `project_src`
+    /// 底下找到 `.git`)。
+    fn init_git_repo(project_src: &std::path::Path) {
+        use git2::{Repository, Signature};
+        let repo = Repository::init(project_src).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = Signature::now("test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial commit", &tree, &[])
+            .unwrap();
+    }
+
+    #[test]
+    fn hash_with_build_flag_hashes_build_command_plus_commit() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-hash-build-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+        let keys_dir = project_src.join("keys");
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+        init(
+            &Init {
+                name: "demo-pkg".to_string(),
+                entry: "main.sh".to_string(),
+                ver: "0.1.0".to_string(),
+                description: "a demo package".to_string(),
+                author: "alice".to_string(),
+            },
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap();
+        init_git_repo(&project_src);
+
+        let repo_dir = project_src.join("unused-repo-dir");
+        hash(
+            &Hash {
+                package_name: "demo-pkg".to_string(),
+                build: Some("cargo build --release".to_string()),
+            },
+            &project_src,
+            &repo_dir,
+        )
+        .unwrap();
+
+        let package_info: PackageInfo =
+            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json"))
+                .unwrap();
+        assert_eq!(package_info.hash.len(), 64, "must be a full blake3 hex digest");
+
+        // 同樣的 build_command,重跑一次必須得到一樣的 hash(HEAD 沒變)。
+        hash(
+            &Hash {
+                package_name: "demo-pkg".to_string(),
+                build: Some("cargo build --release".to_string()),
+            },
+            &project_src,
+            &repo_dir,
+        )
+        .unwrap();
+        let package_info_again: PackageInfo =
+            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json"))
+                .unwrap();
+        assert_eq!(package_info.hash, package_info_again.hash);
+
+        // 換一個 build_command,hash 必須不同。
+        hash(
+            &Hash {
+                package_name: "demo-pkg".to_string(),
+                build: Some("cargo build".to_string()),
+            },
+            &project_src,
+            &repo_dir,
+        )
+        .unwrap();
+        let package_info_different: PackageInfo =
+            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json"))
+                .unwrap();
+        assert_ne!(package_info.hash, package_info_different.hash);
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    #[test]
+    fn hash_uses_the_zip_file_directly_when_it_already_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "dpm-server-hash-zip-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let project_src = root.join("packages");
+        let repo_dir = root.join("Repo");
+        std::fs::create_dir_all(&project_src).unwrap();
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let keys_dir = root.join("keys");
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+        init(
+            &Init {
+                name: "demo-pkg".to_string(),
+                entry: "main.sh".to_string(),
+                ver: "0.1.0".to_string(),
+                description: "a demo package".to_string(),
+                author: "alice".to_string(),
+            },
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap();
+        build(
+            &Build {
+                package_name: "demo-pkg".to_string(),
+            },
+            &project_src,
+            &repo_dir,
+        )
+        .unwrap();
+        let expected_hash = dpm_core::hash_file(&repo_dir.join("demo-pkg.zip")).unwrap();
+
+        hash(
+            &Hash {
+                package_name: "demo-pkg".to_string(),
+                build: None,
+            },
+            &project_src,
+            &repo_dir,
+        )
+        .unwrap();
+
+        let package_info: PackageInfo =
+            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json"))
+                .unwrap();
+        assert_eq!(package_info.hash, expected_hash);
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

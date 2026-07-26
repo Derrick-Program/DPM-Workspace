@@ -19,6 +19,7 @@ DPM-Core = { workspace = true, features = ["server"] }
 anyhow.workspace = true
 clap.workspace = true
 colored.workspace = true
+git2 = "0.18.1"
 reqwest = { workspace = true, features = ["blocking"] }
 thiserror.workspace = true
 walkdir.workspace = true
