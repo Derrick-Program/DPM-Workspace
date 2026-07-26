@@ -288,15 +288,25 @@ fn verify_publish_authorization(
         ))
     })?;
 
-    if let Ok(versions) = repo.versions_of(project_name) {
-        if let Some(existing) = versions.first() {
-            if existing.author.as_deref() != Some(author) {
-                return Err(ServerError::ValidationError(format!(
-                    "{project_name} was first published by author '{}', but this version is signed by '{author}' — authorship cannot change without manual review",
-                    existing.author.as_deref().unwrap_or("<unknown>")
-                )));
+    match repo.versions_of(project_name) {
+        Ok(versions) => {
+            if let Some(existing) = versions.first() {
+                if existing.author.as_deref() != Some(author) {
+                    return Err(ServerError::ValidationError(format!(
+                        "{project_name} was first published by author '{}', but this version is signed by '{author}' — authorship cannot change without manual review",
+                        existing.author.as_deref().unwrap_or("<unknown>")
+                    )));
+                }
             }
         }
+        // First publish of this package name — nothing to compare against,
+        // fall through and allow it.
+        Err(CoreError::PackageNotFound(_)) => {}
+        // Any other `CoreError` variant is not something this check knows
+        // how to interpret as "no prior versions" — fail closed instead of
+        // silently skipping the author-consistency check (the central
+        // anti-hijack invariant of this whole feature).
+        Err(e) => return Err(e.into()),
     }
     Ok(())
 }
