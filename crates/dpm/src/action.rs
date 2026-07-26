@@ -29,11 +29,29 @@ async fn verify_official_signature(
     signature: &str,
     key_cache: &mut HashMap<String, VerifyingKey>,
 ) -> ClientResult<()> {
+    // `author` comes straight from RepoInfo.json (attacker-controlled) and is
+    // interpolated into a URL path below — without this check a value like
+    // `"../../../mallory/evil-keys/main/keys/mallory"` would redirect the
+    // "official" key fetch to an attacker-chosen repo, making the attacker's
+    // own signature verify. Same guard as `dpm-server`'s
+    // `verify_publish_authorization`.
+    if author.is_empty()
+        || !author
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(ClientError::Core(CoreError::SignatureInvalid(format!(
+            "author id '{author}' contains invalid characters — must match [A-Za-z0-9_-]+"
+        ))));
+    }
     if !key_cache.contains_key(author) {
         let key_url = official_key_url(repo_url, author);
-        let bytes = reqwest::get(&key_url)
+        let response = reqwest::get(&key_url)
             .await
             .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?
+            .error_for_status()
+            .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?;
+        let bytes = response
             .bytes()
             .await
             .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?;
@@ -662,7 +680,9 @@ mod sync_source_tests {
         let root = tempfile::tempdir().unwrap();
         let ctx = Context::for_test(root.path()).await.unwrap();
 
-        ActionInfo::sync_source_inner(&ctx, &source, true).await.unwrap();
+        ActionInfo::sync_source_inner(&ctx, &source, true)
+            .await
+            .unwrap();
 
         let all = ctx.db.read_all().await.unwrap();
         assert_eq!(all.len(), 1, "the badly-signed package must be skipped");
@@ -699,13 +719,162 @@ mod sync_source_tests {
         let root = tempfile::tempdir().unwrap();
         let ctx = Context::for_test(root.path()).await.unwrap();
 
-        ActionInfo::sync_source_inner(&ctx, &source, false).await.unwrap();
+        ActionInfo::sync_source_inner(&ctx, &source, false)
+            .await
+            .unwrap();
 
         let all = ctx.db.read_all().await.unwrap();
         assert_eq!(
             all.len(),
             1,
             "unsigned packages from non-official sources are not gated"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_source_inner_rejects_path_traversal_author() {
+        let good_hash = "a".repeat(64);
+        // A syntactically well-formed hex signature — irrelevant, since the
+        // author id itself must be rejected before any key fetch/verify
+        // happens.
+        let sig = "0".repeat(128);
+
+        let mut packages = StdHashMap::new();
+        packages.insert(
+            "evil-pkg".to_string(),
+            vec![PackageVersionInfo {
+                version: "1.0.0".to_string(),
+                kind: PackageKind::Prebuilt {
+                    url: "https://example.com/evil.zip".to_string(),
+                    hash: good_hash,
+                    file_name: "evil.zip".to_string(),
+                },
+                dependencies: None,
+                entry: None,
+                description: None,
+                author: Some("../../../../mallory/evil-keys/main/keys/mallory".to_string()),
+                signature: Some(sig),
+            }],
+        );
+        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+        let repo_info_url = serve_once(body);
+
+        let source = Source {
+            alias: "official".to_string(),
+            // Never actually dialed: the author-id charset check must reject
+            // this before any URL gets built or fetched.
+            repo_url: "https://example.com/should-not-be-fetched".to_string(),
+            repo_info: repo_info_url,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        ActionInfo::sync_source_inner(&ctx, &source, true)
+            .await
+            .unwrap();
+
+        let all = ctx.db.read_all().await.unwrap();
+        assert_eq!(
+            all.len(),
+            0,
+            "a path-traversal author id must not verify or insert"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_source_inner_skips_missing_signature_field_when_official() {
+        let mut packages = StdHashMap::new();
+        packages.insert(
+            "no-sig-pkg".to_string(),
+            vec![PackageVersionInfo {
+                version: "1.0.0".to_string(),
+                kind: PackageKind::Prebuilt {
+                    url: "https://example.com/no-sig.zip".to_string(),
+                    hash: "a".repeat(64),
+                    file_name: "no-sig.zip".to_string(),
+                },
+                dependencies: None,
+                entry: None,
+                description: None,
+                author: Some("alice".to_string()),
+                // Present author, but no signature — must be rejected, not
+                // silently trusted.
+                signature: None,
+            }],
+        );
+        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+        let repo_info_url = serve_once(body);
+
+        let source = Source {
+            alias: "official".to_string(),
+            repo_url: "https://example.com/should-not-be-fetched".to_string(),
+            repo_info: repo_info_url,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        ActionInfo::sync_source_inner(&ctx, &source, true)
+            .await
+            .unwrap();
+
+        let all = ctx.db.read_all().await.unwrap();
+        assert_eq!(
+            all.len(),
+            0,
+            "a package version missing author/signature/hash must be skipped, not inserted"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_source_inner_skips_signature_signed_over_a_different_hash() {
+        let signing_key = dpm_core::generate_signing_key().unwrap();
+        let pubkey_bytes = signing_key.verifying_key().to_bytes().to_vec();
+        let real_hash = "a".repeat(64);
+        let other_hash = "b".repeat(64);
+        // A genuinely valid signature — just over the wrong hash. Proves the
+        // check binds the signature to *this* package's hash, not merely
+        // "any valid signature from this author".
+        let sig_over_wrong_hash = dpm_core::sign_hash(&signing_key, &other_hash);
+
+        let mut packages = StdHashMap::new();
+        packages.insert(
+            "mismatched-hash-pkg".to_string(),
+            vec![PackageVersionInfo {
+                version: "1.0.0".to_string(),
+                kind: PackageKind::Prebuilt {
+                    url: "https://example.com/mismatched.zip".to_string(),
+                    hash: real_hash,
+                    file_name: "mismatched.zip".to_string(),
+                },
+                dependencies: None,
+                entry: None,
+                description: None,
+                author: Some("alice".to_string()),
+                signature: Some(sig_over_wrong_hash),
+            }],
+        );
+        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+
+        let key_url = serve_once(pubkey_bytes);
+        let repo_info_url = serve_once(body);
+
+        let source = Source {
+            alias: "official".to_string(),
+            repo_url: key_url,
+            repo_info: repo_info_url,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        ActionInfo::sync_source_inner(&ctx, &source, true)
+            .await
+            .unwrap();
+
+        let all = ctx.db.read_all().await.unwrap();
+        assert_eq!(
+            all.len(),
+            0,
+            "a valid signature over the wrong hash must not verify"
         );
     }
 }
