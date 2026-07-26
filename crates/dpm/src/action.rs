@@ -6,7 +6,8 @@ use crate::{
 };
 use colored::Colorize;
 use dpm_core::CoreError;
-use dpm_core::{Dependency, JsonStorage, PackageKind, RepoInfo};
+use dpm_core::{Dependency, JsonStorage, PackageKind, RepoInfo, VerifyingKey};
+use std::collections::HashMap;
 use std::fs::{remove_dir_all, remove_file};
 use std::path::Path;
 
@@ -15,6 +16,34 @@ use std::path::Path;
 /// `resolve_install_set`. Named to keep `parse_mine`'s return type under
 /// clippy's `type_complexity` threshold.
 type ParsedInstallSpec = (Option<String>, String, Option<String>);
+
+/// 抓(或重用快取的)`author` 的 ed25519 公鑰(從官方來源的
+/// `keys/<author>.pub`),驗證 `signature` 是不是 `hash` 的合法簽章。
+/// `sync_source_inner`(同一次 sync,多個套件版本,值得快取)、
+/// `install_resolved_with_gate`(單一套件安裝,獨立重新抓一次,不信任
+/// `sync_source` 當初看到的任何東西——這就是縱深防禦的重點)共用同一份實作。
+async fn verify_official_signature(
+    repo_url: &str,
+    author: &str,
+    hash: &str,
+    signature: &str,
+    key_cache: &mut HashMap<String, VerifyingKey>,
+) -> ClientResult<()> {
+    if !key_cache.contains_key(author) {
+        let key_url = official_key_url(repo_url, author);
+        let bytes = reqwest::get(&key_url)
+            .await
+            .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?
+            .bytes()
+            .await
+            .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?;
+        let verifying_key = dpm_core::verifying_key_from_bytes(bytes.as_ref())?;
+        key_cache.insert(author.to_string(), verifying_key);
+    }
+    let verifying_key = key_cache.get(author).expect("just inserted above");
+    dpm_core::verify_hash_signature(verifying_key, hash, signature)?;
+    Ok(())
+}
 
 #[derive(Debug)]
 pub struct ActionInfo {
@@ -258,8 +287,22 @@ impl ActionInfo {
     /// 抓某一個來源的完整索引,清空該來源在本地 DB 的舊資料,把每個套件的每個
     /// 版本各自插入一列。`update()`(既有來源全部重整)、`init_update()`
     /// (`init()` 第一次執行時的初始灌入)共用這個邏輯——原本兩處各自複製一份
-    /// 幾乎相同的程式碼。
+    /// 幾乎相同的程式碼。真正的邏輯在 `sync_source_inner`,這裡只是計算
+    /// `is_official` 這個安全閘門再委派過去。
     async fn sync_source(ctx: &Context, source: &Source) -> ClientResult<()> {
+        let is_official = source.repo_url == OFFICIAL_REPO_URL;
+        Self::sync_source_inner(ctx, source, is_official).await
+    }
+
+    /// `sync_source` 的實際邏輯,`is_official` 從呼叫端算好傳進來(不是在
+    /// 這裡重新比對 `OFFICIAL_REPO_URL`)——這樣測試才能在不打真網路的情況下
+    /// 強制走簽章驗證路徑(`OFFICIAL_REPO_URL` 是寫死指向真實 GitHub 的常數,
+    /// 測試不可能讓 `source.repo_url` 真的等於它)。
+    async fn sync_source_inner(
+        ctx: &Context,
+        source: &Source,
+        is_official: bool,
+    ) -> ClientResult<()> {
         let mut remote_repo = RepoInfo::new();
         remote_repo
             .fetch_update_repo_info(&source.repo_info)
@@ -267,16 +310,48 @@ impl ActionInfo {
 
         ctx.db.clear_table_for_source(&source.alias).await?;
 
+        let mut key_cache: HashMap<String, VerifyingKey> = HashMap::new();
+
         for (name, versions) in remote_repo.get_package_handler() {
             for version_info in versions {
+                let (kind_str, url, hash, filename, build_command) =
+                    version_info.kind.to_db_fields();
+
+                if is_official {
+                    let author = version_info.author.as_deref();
+                    let signature = version_info.signature.as_deref();
+                    let verified = match (author, signature, hash.as_deref()) {
+                        (Some(author), Some(signature), Some(hash)) => {
+                            verify_official_signature(
+                                &source.repo_url,
+                                author,
+                                hash,
+                                signature,
+                                &mut key_cache,
+                            )
+                            .await
+                        }
+                        _ => Err(ClientError::Core(CoreError::SignatureInvalid(
+                            "missing author, signature, or hash".to_string(),
+                        ))),
+                    };
+                    if let Err(e) = verified {
+                        println!(
+                            "{} skipping {name}@{} (author: {}) — signature verification failed: {e}",
+                            "Warning:".yellow(),
+                            version_info.version,
+                            author.unwrap_or("<none>"),
+                        );
+                        continue;
+                    }
+                }
+
                 let dependencies: Option<Vec<dpm_core::Dependency>> =
                     version_info.dependencies.as_ref().map(|deps| {
                         deps.iter()
                             .map(|dep| Dependency::new(&dep.name, &dep.version))
                             .collect::<Vec<_>>()
                     });
-                let (kind_str, url, hash, filename, build_command) =
-                    version_info.kind.to_db_fields();
                 ctx.db
                     .insert(DbPackage::new(
                         &source.alias,
@@ -290,8 +365,8 @@ impl ActionInfo {
                         version_info.description.as_deref().unwrap_or(""),
                         version_info.entry.clone(),
                         dependencies,
-                        None, // Task 10 會換成 version_info.author.clone()
-                        None, // Task 10 會換成 version_info.signature.clone()
+                        version_info.author.clone(),
+                        version_info.signature.clone(),
                     ))
                     .await?;
             }
@@ -491,6 +566,146 @@ mod installed_package_names_tests {
         assert_eq!(
             installed_package_names(root.path()).unwrap(),
             vec!["alpha".to_string(), "zeta".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod sync_source_tests {
+    use super::*;
+    use dpm_core::{PackageKind, PackageVersionInfo};
+    use std::collections::HashMap as StdHashMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// 跟 `crates/dpm/src/utils/fetcher.rs::serve_once` 同一個手法:接受一次
+    /// 連線,回傳固定的 body,忽略實際請求的路徑——`official_key_url`/
+    /// `official_repo_info_url` 算出來的路徑不影響這個 mock 的回應內容。
+    fn serve_once(body: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// JSON 形狀跟 `dpm_core::RepoInfo` 的 serde 表示法一致(`{"packages": {...}}`),
+    /// 但不透過 `RepoInfo::add_package_version`(那個方法在 `server` feature
+    /// 底下,`dpm` 沒有開這個 feature)——直接組出等價的 JSON 內容給
+    /// `fetch_update_repo_info` 解析。
+    #[derive(serde::Serialize)]
+    struct FakeRepoInfo {
+        packages: StdHashMap<String, Vec<PackageVersionInfo>>,
+    }
+
+    #[tokio::test]
+    async fn sync_source_inner_skips_invalid_signature_but_keeps_valid_one_when_official() {
+        let signing_key = dpm_core::generate_signing_key().unwrap();
+        let pubkey_bytes = signing_key.verifying_key().to_bytes().to_vec();
+        let good_hash = "a".repeat(64);
+        let good_sig = dpm_core::sign_hash(&signing_key, &good_hash);
+        let bad_sig = "0".repeat(128);
+
+        let mut packages = StdHashMap::new();
+        packages.insert(
+            "good-pkg".to_string(),
+            vec![PackageVersionInfo {
+                version: "1.0.0".to_string(),
+                kind: PackageKind::Prebuilt {
+                    url: "https://example.com/good.zip".to_string(),
+                    hash: good_hash.clone(),
+                    file_name: "good.zip".to_string(),
+                },
+                dependencies: None,
+                entry: None,
+                description: None,
+                author: Some("alice".to_string()),
+                signature: Some(good_sig),
+            }],
+        );
+        packages.insert(
+            "bad-pkg".to_string(),
+            vec![PackageVersionInfo {
+                version: "1.0.0".to_string(),
+                kind: PackageKind::Prebuilt {
+                    url: "https://example.com/bad.zip".to_string(),
+                    hash: good_hash.clone(),
+                    file_name: "bad.zip".to_string(),
+                },
+                dependencies: None,
+                entry: None,
+                description: None,
+                author: Some("alice".to_string()),
+                signature: Some(bad_sig),
+            }],
+        );
+        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+
+        let key_url = serve_once(pubkey_bytes);
+        let repo_info_url = serve_once(body);
+
+        let source = Source {
+            alias: "official".to_string(),
+            repo_url: key_url,
+            repo_info: repo_info_url,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        ActionInfo::sync_source_inner(&ctx, &source, true).await.unwrap();
+
+        let all = ctx.db.read_all().await.unwrap();
+        assert_eq!(all.len(), 1, "the badly-signed package must be skipped");
+        assert_eq!(all[0].name, "good-pkg");
+    }
+
+    #[tokio::test]
+    async fn sync_source_inner_skips_verification_when_not_official() {
+        let mut packages = StdHashMap::new();
+        packages.insert(
+            "unsigned-pkg".to_string(),
+            vec![PackageVersionInfo {
+                version: "1.0.0".to_string(),
+                kind: PackageKind::Prebuilt {
+                    url: "https://example.com/unsigned.zip".to_string(),
+                    hash: "irrelevant".to_string(),
+                    file_name: "unsigned.zip".to_string(),
+                },
+                dependencies: None,
+                entry: None,
+                description: None,
+                author: None,
+                signature: None,
+            }],
+        );
+        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+        let repo_info_url = serve_once(body);
+
+        let source = Source {
+            alias: "third-party".to_string(),
+            repo_url: "https://example.com/some-other-repo".to_string(),
+            repo_info: repo_info_url,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        ActionInfo::sync_source_inner(&ctx, &source, false).await.unwrap();
+
+        let all = ctx.db.read_all().await.unwrap();
+        assert_eq!(
+            all.len(),
+            1,
+            "unsigned packages from non-official sources are not gated"
         );
     }
 }
