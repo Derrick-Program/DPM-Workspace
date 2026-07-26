@@ -45,6 +45,7 @@ zipsign gen-key dpm-release-signing.priv dpm-release-signing.pub
 ```
 
 產出:
+
 - `dpm-release-signing.priv`:64 bytes 原始二進位(ed25519 keypair,`SigningKey::to_keypair_bytes()`)。**不 commit**,轉 base64 後存進 GitHub repo 的 Actions secret `ZIPSIGN_SIGNING_KEY_B64`,本機留存的檔案自行妥善保管或刪除。副檔名刻意用 `.priv` 而不是 `.key`——`.gitignore` 已經在前面 Quick Win 批次加過 `*.key`,但那條規則是防範一般用途的金鑰檔意外入庫,不能保證涵蓋這裡刻意挑的檔名,用 `.priv` 明確跟 `pub` 檔對應、一眼看出是哪一半,不依賴 gitignore pattern 是否剛好匹配。
 - `dpm-release-signing.pub`:32 bytes 原始二進位(`VerifyingKey::as_bytes()`)。**commit 進 repo**——這是公鑰,公開沒有風險,commit 到 `crates/dpm/keys/dpm-release-signing.pub`。
 
@@ -119,11 +120,11 @@ git2 = { version = "0.18.1", features = ["vendored-openssl", "vendored-libgit2"]
 
 Job matrix(4 組):
 
-| target | runner |
-|---|---|
-| `x86_64-apple-darwin` | `macos-latest` |
-| `aarch64-apple-darwin` | `macos-latest` |
-| `x86_64-unknown-linux-gnu` | `ubuntu-latest` |
+| target                        | runner                             |
+| ----------------------------- | ---------------------------------- |
+| `x86_64-apple-darwin`       | `macos-latest`                   |
+| `aarch64-apple-darwin`      | `macos-latest`                   |
+| `x86_64-unknown-linux-gnu`  | `ubuntu-latest`                  |
 | `aarch64-unknown-linux-gnu` | `ubuntu-latest`(cross toolchain) |
 
 每個 target 的 job 步驟:
