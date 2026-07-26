@@ -1,8 +1,8 @@
 mod error;
 mod zip_file;
-pub use error::*;
 pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use ed25519_dalek::{Signer, Verifier};
+pub use error::*;
 use serde::{Deserialize, Serialize};
 use serde_json::to_writer_pretty;
 use std::{collections::HashMap, io::Read, path::Path};
@@ -292,13 +292,9 @@ impl PackageKind {
                 Some(file_name.clone()),
                 None,
             ),
-            PackageKind::Source { build, hash } => (
-                "source",
-                None,
-                hash.clone(),
-                None,
-                Some(build.clone()),
-            ),
+            PackageKind::Source { build, hash } => {
+                ("source", None, hash.clone(), None, Some(build.clone()))
+            }
         }
     }
 
