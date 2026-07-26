@@ -16,6 +16,13 @@ use std::path::Path;
 /// clippy's `type_complexity` threshold.
 type ParsedInstallSpec = (Option<String>, String, Option<String>);
 
+/// 驗證下載回來的 `dpm` release archive 簽章用的 ed25519 公鑰(32 bytes)。
+/// 對應的私鑰不會出現在這個 repo 裡——它只存在 GitHub Actions secret
+/// `ZIPSIGN_SIGNING_KEY_B64`,由 `.github/workflows/release.yml` 用來簽每個
+/// release asset。金鑰產生方式見
+/// `docs/superpowers/specs/2026-07-26-self-update-design.md`「簽章金鑰」段落。
+const RELEASE_SIGNING_PUBLIC_KEY: &[u8; 32] = include_bytes!("../keys/dpm-release-signing.pub");
+
 #[derive(Debug)]
 pub struct ActionInfo {
     pub ctx: Context,
@@ -439,8 +446,51 @@ impl ActionInfo {
         Ok(())
     }
 
-    pub fn upgrade_self(&self) {
-        println!("{} Upgrading self", "==>".blue());
+    pub async fn upgrade_self(&self) -> ClientResult<()> {
+        let verbose = self.verbose;
+        let status_result = tokio::task::spawn_blocking(move || {
+            let build_result = self_update::backends::github::Update::configure()
+                .repo_owner("Derrick-Program")
+                .repo_name("DPM-Workspace")
+                .bin_name("dpm")
+                .show_download_progress(verbose)
+                .show_output(verbose)
+                .current_version(env!("CARGO_PKG_VERSION"))
+                .verifying_keys([*RELEASE_SIGNING_PUBLIC_KEY])
+                .build();
+
+            match build_result {
+                Ok(update) => update.update(),
+                Err(e) => Err(e),
+            }
+        })
+        .await
+        .map_err(|e| ClientError::SystemError(format!("update task failed: {e}")))?;
+
+        match status_result {
+            Ok(self_update::Status::UpToDate(v)) => {
+                println!("{} dpm is already up to date (v{v})", "==>".green());
+            }
+            Ok(self_update::Status::Updated(v)) => {
+                println!("{} dpm updated to v{v}", "==>".green());
+            }
+            Err(e) if is_signature_error(&e) => {
+                return Err(ClientError::SystemError(format!(
+                    "{}\n{} downloaded update failed signature verification — refusing to install. \
+                     This could mean the release was tampered with, or is missing a valid signature. \
+                     Not proceeding.",
+                    e,
+                    "INSECURE:".red().bold()
+                )));
+            }
+            Err(e) if is_permission_denied(&e) => {
+                return Err(ClientError::SystemError(format!(
+                    "{e}\nhint: dpm's binary isn't writable by the current user — try `sudo dpm upgrade-self`"
+                )));
+            }
+            Err(e) => return Err(ClientError::SystemError(e.to_string())),
+        }
+        Ok(())
     }
 }
 
