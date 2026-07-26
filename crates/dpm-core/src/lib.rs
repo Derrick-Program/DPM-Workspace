@@ -62,6 +62,27 @@ pub fn sign_hash(signing_key: &SigningKey, hash_hex: &str) -> String {
     hex::encode(sig.to_bytes())
 }
 
+/// 檢查 `author` 是否只由 `[A-Za-z0-9_-]` 組成且非空——多個呼叫端
+/// (`dpm-server` 的 `init`/`sign`/`verify_publish_authorization`、`dpm` 的
+/// `verify_official_signature`)都會把 `author` 直接當路徑片段組出
+/// `keys_dir.join(...)`,而 `author` 的來源(`packageInfo.json`/
+/// `RepoInfo.json`/CLI 參數)都是攻擊者可控的資料。沒有這層檢查,
+/// 像 `"../../../mallory/evil-keys/main/keys/mallory"` 這樣的值可以逃出
+/// `keys_dir`,讀到任意檔案,或把「官方」金鑰抓取重導向到攻擊者控制的位置。
+/// 之前這個檢查在 `dpm-server`、`dpm` 各自複製了一份;這裡集中成一份共用實作。
+pub fn validate_author_id(author: &str) -> CoreResult<()> {
+    if author.is_empty()
+        || !author
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(CoreError::SignatureInvalid(format!(
+            "author id '{author}' contains invalid characters — must match [A-Za-z0-9_-]+"
+        )));
+    }
+    Ok(())
+}
+
 /// 驗證 `signature_hex` 是否是 `verifying_key` 對 `hash_hex` 的合法簽章。
 /// hex 格式錯誤、簽章長度不對、驗證不過——任何一步失敗都回傳同一種
 /// `CoreError::SignatureInvalid`,呼叫端不需要分辨失敗原因,一律視為

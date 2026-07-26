@@ -35,15 +35,7 @@ async fn verify_official_signature(
     // "official" key fetch to an attacker-chosen repo, making the attacker's
     // own signature verify. Same guard as `dpm-server`'s
     // `verify_publish_authorization`.
-    if author.is_empty()
-        || !author
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(ClientError::Core(CoreError::SignatureInvalid(format!(
-            "author id '{author}' contains invalid characters — must match [A-Za-z0-9_-]+"
-        ))));
-    }
+    dpm_core::validate_author_id(author)?;
     if !key_cache.contains_key(author) {
         let key_url = official_key_url(repo_url, author);
         let response = reqwest::get(&key_url)

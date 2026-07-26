@@ -151,6 +151,11 @@ pub fn sign(obj: &Sign, project_src: &Path, keys_dir: &Path) -> ServerResult<()>
             obj.name
         ))
     })?;
+    // Same path-traversal guard as `verify_publish_authorization`: `author`
+    // comes straight from this package's packageInfo.json (the same
+    // untrusted file that check distrusts) and is about to be used as a
+    // path component below.
+    dpm_core::validate_author_id(&author)?;
 
     let priv_path = keys_dir.join(format!("{author}.priv"));
     let priv_bytes = std::fs::read(&priv_path).map_err(|e| {
@@ -181,6 +186,13 @@ pub fn build(obj: &Build, project_src: &Path, repo_dir: &Path) -> ServerResult<(
 }
 
 pub fn init(obj: &Init, project_src: &Path, keys_dir: &Path) -> ServerResult<()> {
+    // `obj.author` ends up written verbatim into packageInfo.json, which
+    // every other author-id call site (`verify_publish_authorization`,
+    // `sign`, `dpm`'s `verify_official_signature`) treats as untrusted input
+    // and uses as a path component — reject an invalid id here too, before
+    // it's used as a path below or persisted downstream.
+    dpm_core::validate_author_id(&obj.author)?;
+
     let pubkey_path = keys_dir.join(format!("{}.pub", obj.author));
     if !pubkey_path.exists() {
         return Err(ServerError::ValidationError(format!(
@@ -258,15 +270,7 @@ fn verify_publish_authorization(
     // discards the base entirely on an absolute string, and `..` segments
     // escape `keys_dir` either way, which would let a malicious author id
     // point the "public key" read at an arbitrary file on disk.
-    if author.is_empty()
-        || !author
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(ServerError::ValidationError(format!(
-            "author id '{author}' contains invalid characters — must match [A-Za-z0-9_-]+"
-        )));
-    }
+    dpm_core::validate_author_id(author)?;
 
     let pubkey_path = keys_dir.join(format!("{author}.pub"));
     let pubkey_bytes = std::fs::read(&pubkey_path).map_err(|e| {
@@ -1070,6 +1074,51 @@ mod tests {
         assert!(
             !project_src.join("demo-pkg").exists(),
             "must not create the package skeleton without a key"
+        );
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    /// Important 2: `init()` used to be one of two call sites that built a
+    /// path out of the CLI-provided `author` (`keys_dir.join(format!("{}.pub",
+    /// obj.author))`) with no charset validation — unlike
+    /// `verify_publish_authorization`, which already rejected a
+    /// path-traversal author id. Now both funnel through
+    /// `dpm_core::validate_author_id`; this pins down that `init()` rejects
+    /// a malicious author id before it touches any path or gets persisted
+    /// into `packageInfo.json`.
+    #[test]
+    fn init_rejects_a_path_traversal_author_id() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-init-path-traversal-author-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+        let keys_dir = project_src.join("keys");
+
+        let err = init(
+            &Init {
+                name: "demo-pkg".to_string(),
+                entry: "main.sh".to_string(),
+                ver: "0.1.0".to_string(),
+                description: "a demo package".to_string(),
+                author: "../../../../mallory/evil-keys/main/keys/mallory".to_string(),
+            },
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ServerError::Core(CoreError::SignatureInvalid(_))
+        ));
+        assert!(
+            !project_src.join("demo-pkg").exists(),
+            "must not create the package skeleton for a rejected author id"
         );
 
         std::fs::remove_dir_all(&project_src).ok();
