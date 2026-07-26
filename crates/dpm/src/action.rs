@@ -276,6 +276,12 @@ impl ActionInfo {
     /// 目錄裡用呼叫者當下的權限(不經過 `system_command_runner`,所以不管
     /// `--system` 與否都不會提權)執行 `build_command`,`$OUT` 指向這次的產出
     /// 目錄,成功後透過既有的 `swap_into_install_dir` 原子換裝。
+    ///
+    /// 已知限制(見 `dpm_core::PackageKind::Source` 的文件註解):簽章驗證只
+    /// 保證下面 `build_command` 這個字串是作者發布的,不保證這裡實際 clone
+    /// 下來、餵給 `sh -c` 執行的原始碼樹跟簽署當下一致——commit 沒有被發布到
+    /// 任何 client 端可以驗證的地方。目前是刻意延後、尚未涵蓋的範圍,不是可
+    /// 利用的漏洞。
     fn install_source_package(
         &self,
         pkg: &str,

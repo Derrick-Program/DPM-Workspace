@@ -16,6 +16,8 @@
 
 **擋不住**(明確告知使用者,不誇大保護範圍):作者公鑰本身(`keys/<author_id>.pub`)是 client 即時從官方 repo 抓的,信任層級跟 `RepoInfo.json` 本身一樣——如果官方 repo 整個被接手(不只是改 `RepoInfo.json`,連 `keys/` 目錄也能改),攻擊者可以連公鑰一起換掉,形式上還是驗證得過。這個系統防的是「這個版本沒有經過原作者的私鑰簽署」,不是防「官方 repo 完全淪陷」——後者是 branch protection/帳號安全那個層級的問題,不是簽章系統要解的。
 
+**已知、刻意延後的限制**:`kind: source` 套件簽的 hash 是 `build_command + 發布當下的 commit`,但 commit 本身沒有發布到任何 client 端可以驗證的地方——簽章只證明「這串 build 指令是作者發布的」,不證明「client 實際 clone 下來執行的原始碼樹跟簽署當下一致」。目前不是可被利用的漏洞,只是尚未涵蓋的範圍。
+
 ## 目標
 
 - `dpm-server` 新增 `keygen`/`sign` 子指令,`init` 加上 `--author` 必填參數。
