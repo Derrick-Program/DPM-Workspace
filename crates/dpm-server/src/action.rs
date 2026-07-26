@@ -10,6 +10,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use walkdir::WalkDir;
 pub fn keygen(obj: &Keygen, keys_dir: &Path) -> ServerResult<()> {
+    dpm_core::validate_author_id(&obj.author_id)?;
     std::fs::create_dir_all(keys_dir)?;
     let priv_path = keys_dir.join(format!("{}.priv", obj.author_id));
     let pub_path = keys_dir.join(format!("{}.pub", obj.author_id));
@@ -1132,6 +1133,35 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    #[test]
+    fn keygen_rejects_a_path_traversal_author_id() {
+        let keys_dir = std::env::temp_dir().join(format!(
+            "dpm-server-keygen-path-traversal-author-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let err = keygen(
+            &Keygen {
+                author_id: "../../../../mallory/evil-keys/main/keys/mallory".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ServerError::Core(CoreError::SignatureInvalid(_))
+        ));
+        assert!(
+            !keys_dir.exists(),
+            "must not create keys_dir for a rejected author id"
+        );
     }
 
     #[test]

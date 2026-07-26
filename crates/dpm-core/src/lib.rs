@@ -281,11 +281,16 @@ pub enum PackageKind {
     /// `blake3(build_command + commit hash)`(`dpm-server hash --build`
     /// 算出來的),`Option` 是因為還沒被 `hash`+`sign` 過的草稿狀態下沒有值。
     ///
-    /// 已知、刻意延後處理的限制:這個 hash 綁定的是 `build_command` 字串本身
-    /// 加上發布當下的 commit,但 commit 本身沒有被發布到任何 client 端可以
-    /// 驗證的地方——簽章只證明「這串 build 指令是作者發布的」,不證明「這串
-    /// 指令實際 clone 下來執行時,原始碼樹跟簽署當下一致」。目前還不是可被
-    /// 利用的保護漏洞,只是尚未涵蓋的範圍。
+    /// 已知、刻意延後處理的缺口(非本次功能涵蓋範圍,不要當成已解決):這個
+    /// hash 綁定的是 `build_command` 字串加上發布當下的 commit,但 commit
+    /// 本身沒有被發布到任何 client 端可以驗證的地方,client 目前也完全沒有
+    /// 重算這個 hash 並跟簽章比對——`build` 欄位是直接從 `RepoInfo.json`
+    /// 讀出來就拿去執行(見 `dpm/src/action.rs::install_source_package`)。
+    /// 也就是說,對 `kind: source` 套件而言,簽章目前**不提供任何**對
+    /// `build_command` 或原始碼樹的保護:只要能改 `RepoInfo.json`(不需要
+    /// 簽名金鑰),就能把 `build` 換成任意指令,client 端的驗證閘門不會擋下
+    /// 來。`kind: Prebuilt` 不受影響(下載內容有獨立 hash 比對,見
+    /// `fetch_and_verify_prebuilt`)。
     Source {
         build: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

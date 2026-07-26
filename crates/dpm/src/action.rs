@@ -277,11 +277,13 @@ impl ActionInfo {
     /// `--system` 與否都不會提權)執行 `build_command`,`$OUT` 指向這次的產出
     /// 目錄,成功後透過既有的 `swap_into_install_dir` 原子換裝。
     ///
-    /// 已知限制(見 `dpm_core::PackageKind::Source` 的文件註解):簽章驗證只
-    /// 保證下面 `build_command` 這個字串是作者發布的,不保證這裡實際 clone
-    /// 下來、餵給 `sh -c` 執行的原始碼樹跟簽署當下一致——commit 沒有被發布到
-    /// 任何 client 端可以驗證的地方。目前是刻意延後、尚未涵蓋的範圍,不是可
-    /// 利用的漏洞。
+    /// 已知、刻意延後處理的缺口(見 `dpm_core::PackageKind::Source` 的文件
+    /// 註解):下面拿去 `sh -c` 執行的 `repo_package_info.build_command` 是
+    /// 直接從(可能被竄改的)`RepoInfo.json` 讀出來的,前面的簽章驗證只檢查
+    /// 了 `repo_package_info.hash`,並沒有重算並比對 `build_command`——對
+    /// `kind: source` 套件來說,`install_resolved_with_gate` 的簽章閘門目前
+    /// 擋不住有 `RepoInfo.json` 寫入權限、但沒有簽名金鑰的攻擊者換掉這裡的
+    /// build 指令。
     fn install_source_package(
         &self,
         pkg: &str,
