@@ -18,6 +18,8 @@ mod tests {
                 dependencies: None,
                 entry: None,
                 description: None,
+                author: None,
+                signature: None,
             }
         }
 
@@ -145,6 +147,7 @@ mod tests {
             "1.0.0".to_string(),
             "A test package".to_string(),
             "hash123".to_string(),
+            None,
             None,
         );
 

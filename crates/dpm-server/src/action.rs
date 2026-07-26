@@ -86,6 +86,7 @@ pub fn init(obj: &Init, project_src: &Path) -> ServerResult<()> {
         obj.description.to_string(),
         hash,
         None,
+        None, // Task 4 會把這裡換成 Some(obj.author.clone())
     );
     JsonStorage::to_json(&package_info, &project_path.join("packageInfo.json"))?;
     Ok(())
@@ -142,6 +143,7 @@ fn fix_add(obj: &Add, repo: &mut RepoInfo, project_src: &Path) -> ServerResult<(
         }
         AddKind::Build { build } => PackageKind::Source {
             build: build.clone(),
+            hash: None,
         },
     };
 
@@ -151,6 +153,8 @@ fn fix_add(obj: &Add, repo: &mut RepoInfo, project_src: &Path) -> ServerResult<(
         dependencies: pk_info.dependencies,
         entry: None,
         description: Some(pk_info.description),
+        author: None,
+        signature: None,
     };
     repo.add_package_version(obj.project_name.clone(), version_info)?;
     Ok(())
@@ -383,7 +387,7 @@ mod tests {
         let version_info = repo.latest_version("demo-pkg").unwrap();
         assert_eq!(version_info.version, "0.1.0");
         match &version_info.kind {
-            PackageKind::Source { build } => {
+            PackageKind::Source { build, .. } => {
                 assert_eq!(build, "cargo build --release");
             }
             other => panic!("expected PackageKind::Source, got {other:?}"),

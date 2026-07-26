@@ -136,6 +136,15 @@ pub struct PackageInfo {
     pub description: String,
     pub hash: String,
     pub dependencies: Option<Vec<Dependency>>,
+    /// 發布這個版本的作者 id(`keys/<author_id>.pub` 的檔名)。`Option` 是為了
+    /// 讓舊格式(這次改動之前產生)的 `packageInfo.json` 還能被解析——
+    /// `dpm-server init --author` 之後一律會填。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// `dpm-server sign` 對 `hash` 欄位簽出來的 hex 簽章。`init` 建立時是
+    /// `None`,只有 `sign` 這一個指令會寫入。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 impl PackageInfo {
@@ -148,9 +157,10 @@ impl PackageInfo {
     /// - `description`: 套件描述
     /// - `hash`: 套件檔案的雜湊值
     /// - `dependencies`: 可選的依賴列表
+    /// - `author`: 發布這個版本的作者 id
     ///
     /// # 回傳
-    /// 回傳一個新的 `PackageInfo` 結構體
+    /// 回傳一個新的 `PackageInfo` 結構體(`signature` 一律從 `None` 開始)
     pub fn new(
         package_name: String,
         file_name: String,
@@ -158,6 +168,7 @@ impl PackageInfo {
         description: String,
         hash: String,
         dependencies: Option<Vec<Dependency>>,
+        author: Option<String>,
     ) -> PackageInfo {
         PackageInfo {
             package_name,
@@ -166,6 +177,8 @@ impl PackageInfo {
             description,
             hash,
             dependencies,
+            author,
+            signature: None,
         }
     }
 }
@@ -243,8 +256,14 @@ pub enum PackageKind {
         hash: String,
         file_name: String,
     },
-    /// 只提供原始碼 + build 指令,client 在本機執行 build(Phase 4 才會真的走這條路)。
-    Source { build: String },
+    /// 只提供原始碼 + build 指令,client 在本機執行 build。`hash` 是
+    /// `blake3(build_command + commit hash)`(`dpm-server hash --build`
+    /// 算出來的),`Option` 是因為還沒被 `hash`+`sign` 過的草稿狀態下沒有值。
+    Source {
+        build: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hash: Option<String>,
+    },
 }
 
 impl PackageKind {
@@ -273,7 +292,13 @@ impl PackageKind {
                 Some(file_name.clone()),
                 None,
             ),
-            PackageKind::Source { build } => ("source", None, None, None, Some(build.clone())),
+            PackageKind::Source { build, hash } => (
+                "source",
+                None,
+                hash.clone(),
+                None,
+                Some(build.clone()),
+            ),
         }
     }
 
@@ -302,6 +327,7 @@ impl PackageKind {
                 build: build_command.ok_or_else(|| {
                     CoreError::InvalidPackage("source package missing build command".to_string())
                 })?,
+                hash,
             }),
             other => Err(CoreError::InvalidPackage(format!(
                 "unknown package kind: {other}"
@@ -321,6 +347,13 @@ pub struct PackageVersionInfo {
     pub entry: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// 發布這個版本的作者 id。只有 `source.repo_url == OFFICIAL_REPO_URL`
+    /// 的來源會被 client 拿來做簽章驗證,其他來源忽略這個欄位。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// `dpm-server sign` 簽出來的 hex 簽章,簽的是 `kind` 裡的 hash 欄位。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 /// 儲存庫的資訊管理模組——代表「一個來源」自己的索引,不含來源名稱本身

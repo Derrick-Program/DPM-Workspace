@@ -125,6 +125,7 @@ mod tests {
             "test fixture".to_string(),
             hashes_json_hash,
             None,
+            None,
         );
         dpm_core::JsonStorage::to_json(&package_info, &src.join("packageInfo.json")).unwrap();
 
