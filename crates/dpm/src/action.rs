@@ -408,6 +408,21 @@ impl ActionInfo {
                         ))),
                     };
                     if let Err(e) = verified {
+                        // Only an actual signature-validity problem (bad/
+                        // missing signature, bad key bytes, missing fields,
+                        // a rejected author id) is safe to treat as "this
+                        // one package version is untrustworthy, skip it and
+                        // keep going." Anything else — a network/HTTP
+                        // failure fetching the author's key, an IO error,
+                        // etc. — is not evidence the package is malicious;
+                        // treating it the same way would silently empty the
+                        // local index (the DB for this source was already
+                        // cleared above) while `sync_source_inner` still
+                        // reports success. Propagate those as a hard error
+                        // instead so the sync visibly fails.
+                        if !matches!(e, ClientError::Core(CoreError::SignatureInvalid(_))) {
+                            return Err(e);
+                        }
                         println!(
                             "{} skipping {name}@{} (author: {}) — signature verification failed: {e}",
                             "Warning:".yellow(),
@@ -671,6 +686,28 @@ mod sync_source_tests {
         format!("http://127.0.0.1:{port}")
     }
 
+    /// 跟 `serve_once` 一樣的手法,但回傳一個非 2xx 的 HTTP 狀態——用來模擬
+    /// 抓作者公鑰時遇到的暫時性網路問題(GitHub rate-limit、短暫斷線等),
+    /// 跟「這個簽章是偽造的」是完全不同的失敗模式。
+    fn serve_once_404() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let body = b"not found";
+                let response = format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(body);
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
     /// JSON 形狀跟 `dpm_core::RepoInfo` 的 serde 表示法一致(`{"packages": {...}}`),
     /// 但不透過 `RepoInfo::add_package_version`(那個方法在 `server` feature
     /// 底下,`dpm` 沒有開這個 feature)——直接組出等價的 JSON 內容給
@@ -741,6 +778,60 @@ mod sync_source_tests {
         let all = ctx.db.read_all().await.unwrap();
         assert_eq!(all.len(), 1, "the badly-signed package must be skipped");
         assert_eq!(all[0].name, "good-pkg");
+    }
+
+    /// Important 1: a transient network/HTTP failure fetching the author's
+    /// public key must not be conflated with "this signature is forged."
+    /// Regression guard for the bug where ANY error from
+    /// `verify_official_signature` (including a rate-limited/erroring key
+    /// fetch) was treated as "skip this package," which — since
+    /// `clear_table_for_source` already emptied the local DB for this
+    /// source — could silently leave the user with an empty official index
+    /// while `sync_source_inner` still reported `Ok(())`.
+    #[tokio::test]
+    async fn sync_source_inner_propagates_hard_error_on_key_fetch_failure() {
+        let good_hash = "a".repeat(64);
+        // The signature's actual bytes are irrelevant: the key fetch must
+        // fail (and propagate) before any signature verification happens.
+        let sig = "0".repeat(128);
+
+        let mut packages = StdHashMap::new();
+        packages.insert(
+            "some-pkg".to_string(),
+            vec![PackageVersionInfo {
+                version: "1.0.0".to_string(),
+                kind: PackageKind::Prebuilt {
+                    url: "https://example.com/some.zip".to_string(),
+                    hash: good_hash,
+                    file_name: "some.zip".to_string(),
+                },
+                dependencies: None,
+                entry: None,
+                description: None,
+                author: Some("alice".to_string()),
+                signature: Some(sig),
+            }],
+        );
+        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+
+        let key_url = serve_once_404();
+        let repo_info_url = serve_once(body);
+
+        let source = Source {
+            alias: "official".to_string(),
+            repo_url: key_url,
+            repo_info: repo_info_url,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        let err = ActionInfo::sync_source_inner(&ctx, &source, true)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ClientError::Core(CoreError::NetworkError(_))),
+            "a key-fetch HTTP failure must propagate as a hard error, not be silently skipped: {err}"
+        );
     }
 
     #[tokio::test]
