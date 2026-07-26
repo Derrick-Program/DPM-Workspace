@@ -145,8 +145,23 @@ impl ActionInfo {
         all_packages: &[DbPackage],
         is: &[ParsedInstallSpec],
     ) -> ClientResult<()> {
+        self.install_resolved_with_gate(all_packages, is, |repo_url| repo_url == OFFICIAL_REPO_URL)
+            .await
+    }
+
+    /// `install_resolved` 的實際邏輯,「這個來源是不是官方來源」透過
+    /// `is_official` 閉包傳入,而不是在這裡直接比對 `OFFICIAL_REPO_URL`——
+    /// 理由跟 `sync_source_inner` 一樣:讓測試能在不打真網路的情況下強制
+    /// 走簽章驗證路徑。
+    async fn install_resolved_with_gate(
+        &self,
+        all_packages: &[DbPackage],
+        is: &[ParsedInstallSpec],
+        is_official: impl Fn(&str) -> bool,
+    ) -> ClientResult<()> {
         if !is.is_empty() {
             let resolved = resolve_install_set(all_packages, is)?;
+            let mut key_cache: HashMap<String, VerifyingKey> = HashMap::new();
             for (source_alias, name, version) in resolved {
                 let pkg = name.as_str();
                 let repo_package_info = all_packages
@@ -157,6 +172,45 @@ impl ActionInfo {
                             "{source_alias}/{name}@{version}"
                         )))
                     })?;
+
+                let source = self
+                    .setting_config
+                    .sources
+                    .iter()
+                    .find(|s| s.alias == source_alias)
+                    .ok_or_else(|| {
+                        ClientError::ConfigError(format!(
+                            "source '{source_alias}' is not configured"
+                        ))
+                    })?;
+                if is_official(&source.repo_url) {
+                    let author = repo_package_info.author.as_deref();
+                    let signature = repo_package_info.signature.as_deref();
+                    let hash = repo_package_info.hash.as_deref();
+                    match (author, signature, hash) {
+                        (Some(author), Some(signature), Some(hash)) => {
+                            verify_official_signature(
+                                &source.repo_url,
+                                author,
+                                hash,
+                                signature,
+                                &mut key_cache,
+                            )
+                            .await
+                            .map_err(|e| {
+                                ClientError::SystemError(format!(
+                                    "INSECURE: {pkg}@{version} failed signature verification (author: {author}): {e}"
+                                ))
+                            })?;
+                        }
+                        _ => {
+                            return Err(ClientError::SystemError(format!(
+                                "INSECURE: {pkg}@{version} is missing author/signature/hash from the official source; refusing to install"
+                            )));
+                        }
+                    }
+                }
+
                 if self.verbose {
                     println!("{}\n\n  {}", pkg.on_green(), "Downloading...".yellow());
                 }
@@ -876,5 +930,121 @@ mod sync_source_tests {
             0,
             "a valid signature over the wrong hash must not verify"
         );
+    }
+}
+
+#[cfg(test)]
+mod install_resolved_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    fn serve_once(body: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[tokio::test]
+    async fn install_resolved_rejects_a_signature_that_does_not_match_the_recorded_hash() {
+        // 模擬本機 DB 被竄改的情境:提供的公鑰是「真正的作者金鑰」,但
+        // DB 裡記錄的 signature 其實是另一把金鑰簽的——代表 DB 裡的
+        // author/signature/hash 三者已經兜不起來,驗證必須失敗。
+        let real_author_key = dpm_core::generate_signing_key().unwrap();
+        let attacker_key = dpm_core::generate_signing_key().unwrap();
+        let hash = "b".repeat(64);
+        let tampered_signature = dpm_core::sign_hash(&attacker_key, &hash);
+        let pubkey_bytes = real_author_key.verifying_key().to_bytes().to_vec();
+
+        let key_url = serve_once(pubkey_bytes);
+
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+        let setting = Setting {
+            sources: vec![Source {
+                alias: "official".to_string(),
+                repo_url: key_url.clone(),
+                repo_info: key_url,
+            }],
+        };
+        let action = ActionInfo::new(ctx, vec![], false, setting);
+
+        let pkg = DbPackage::new(
+            "official",
+            "tampered-pkg",
+            "1.0.0",
+            "prebuilt",
+            Some("https://example.com/tampered.zip".to_string()),
+            Some(hash),
+            Some("tampered.zip".to_string()),
+            None,
+            "test",
+            None,
+            None,
+            Some("alice".to_string()),
+            Some(tampered_signature),
+        );
+        let all_packages = vec![pkg];
+        let is = vec![(None, "tampered-pkg".to_string(), None)];
+
+        let err = action
+            .install_resolved_with_gate(&all_packages, &is, |_| true)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("INSECURE"),
+            "expected an INSECURE-tagged rejection, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_resolved_rejects_a_package_missing_author_or_signature_when_official() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+        let setting = Setting {
+            sources: vec![Source {
+                alias: "official".to_string(),
+                repo_url: "http://127.0.0.1:1".to_string(),
+                repo_info: "http://127.0.0.1:1".to_string(),
+            }],
+        };
+        let action = ActionInfo::new(ctx, vec![], false, setting);
+
+        let pkg = DbPackage::new(
+            "official",
+            "unsigned-pkg",
+            "1.0.0",
+            "prebuilt",
+            Some("https://example.com/unsigned.zip".to_string()),
+            Some("c".repeat(64)),
+            Some("unsigned.zip".to_string()),
+            None,
+            "test",
+            None,
+            None,
+            None,
+            None,
+        );
+        let all_packages = vec![pkg];
+        let is = vec![(None, "unsigned-pkg".to_string(), None)];
+
+        let err = action
+            .install_resolved_with_gate(&all_packages, &is, |_| true)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("INSECURE"));
     }
 }
