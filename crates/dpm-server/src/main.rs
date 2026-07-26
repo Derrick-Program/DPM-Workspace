@@ -46,7 +46,7 @@ fn main() -> Result<()> {
         Commands::Hash(obj) => hash(obj, &project_src)?,
         Commands::Fix(obj) => fix(obj, &mut repo_info, &project_src)?,
         Commands::Build(obj) => build(obj, &project_src, &repo_dir)?,
-        Commands::Init(obj) => init(obj, &project_src)?,
+        Commands::Init(obj) => init(obj, &project_src, &keys_dir)?,
         Commands::Keygen(obj) => keygen(obj, &keys_dir)?,
     }
     JsonStorage::to_json(&repo_info, &software_repo_info)?;

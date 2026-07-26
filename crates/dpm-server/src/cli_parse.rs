@@ -36,6 +36,9 @@ pub struct Init {
     #[arg(long, short = 'd', default_value = "description")]
     ///Project Description
     pub description: String,
+    /// Author id this package's key belongs to (see `dpm-server keygen`)
+    #[arg(long)]
+    pub author: String,
 }
 
 #[derive(Args, Debug)]

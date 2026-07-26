@@ -112,7 +112,17 @@ pub fn build(obj: &Build, project_src: &Path, repo_dir: &Path) -> ServerResult<(
     Ok(())
 }
 
-pub fn init(obj: &Init, project_src: &Path) -> ServerResult<()> {
+pub fn init(obj: &Init, project_src: &Path, keys_dir: &Path) -> ServerResult<()> {
+    let pubkey_path = keys_dir.join(format!("{}.pub", obj.author));
+    if !pubkey_path.exists() {
+        return Err(ServerError::ValidationError(format!(
+            "no public key found for author '{}' at {}; run `dpm-server keygen {}` first",
+            obj.author,
+            pubkey_path.display(),
+            obj.author
+        )));
+    }
+
     let project_path = project_src.join(obj.name.as_str());
     if !project_path.exists() {
         create_dir_all(&project_path)?;
@@ -133,7 +143,7 @@ pub fn init(obj: &Init, project_src: &Path) -> ServerResult<()> {
         obj.description.to_string(),
         hash,
         None,
-        None, // Task 4 會把這裡換成 Some(obj.author.clone())
+        Some(obj.author.clone()),
     );
     JsonStorage::to_json(&package_info, &project_path.join("packageInfo.json"))?;
     Ok(())
@@ -256,14 +266,25 @@ mod tests {
         ));
         std::fs::create_dir_all(&project_src).unwrap();
 
+        let keys_dir = project_src.join("keys");
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+
         let obj = Init {
             name: "demo-pkg".to_string(),
             entry: "main.sh".to_string(),
             ver: "0.1.0".to_string(),
             description: "a demo package".to_string(),
+            author: "alice".to_string(),
         };
 
-        init(&obj, &project_src).unwrap();
+        init(&obj, &project_src, &keys_dir).unwrap();
 
         let pkg_dir = project_src.join("demo-pkg");
         assert!(pkg_dir.join("main.sh").exists());
@@ -293,14 +314,26 @@ mod tests {
         std::fs::create_dir_all(&project_src).unwrap();
         std::fs::create_dir_all(&repo_dir).unwrap();
 
+        let keys_dir = project_src.join("keys");
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+
         init(
             &Init {
                 name: "demo-pkg".to_string(),
                 entry: "main.sh".to_string(),
                 ver: "0.1.0".to_string(),
                 description: "a demo package".to_string(),
+                author: "alice".to_string(),
             },
             &project_src,
+            &keys_dir,
         )
         .unwrap();
 
@@ -337,14 +370,26 @@ mod tests {
         ));
         std::fs::create_dir_all(&project_src).unwrap();
 
+        let keys_dir = project_src.join("keys");
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+
         init(
             &Init {
                 name: "demo-pkg".to_string(),
                 entry: "main.sh".to_string(),
                 ver: "0.1.0".to_string(),
                 description: "a demo package".to_string(),
+                author: "alice".to_string(),
             },
             &project_src,
+            &keys_dir,
         )
         .unwrap();
 
@@ -411,14 +456,26 @@ mod tests {
         ));
         std::fs::create_dir_all(&project_src).unwrap();
 
+        let keys_dir = project_src.join("keys");
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+
         init(
             &Init {
                 name: "demo-pkg".to_string(),
                 entry: "main.sh".to_string(),
                 ver: "0.1.0".to_string(),
                 description: "a demo package".to_string(),
+                author: "alice".to_string(),
             },
             &project_src,
+            &keys_dir,
         )
         .unwrap();
 
@@ -462,14 +519,26 @@ mod tests {
         ));
         std::fs::create_dir_all(&project_src).unwrap();
 
+        let keys_dir = project_src.join("keys");
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+
         init(
             &Init {
                 name: "demo-pkg".to_string(),
                 entry: "main.sh".to_string(),
                 ver: "0.1.0".to_string(),
                 description: "a demo package".to_string(),
+                author: "alice".to_string(),
             },
             &project_src,
+            &keys_dir,
         )
         .unwrap();
 
@@ -487,6 +556,82 @@ mod tests {
             repo.versions_of("demo-pkg").is_err(),
             "a rejected url must not leave a partial entry in RepoInfo"
         );
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    #[test]
+    fn init_rejects_missing_author_key() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-init-no-key-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+        let keys_dir = project_src.join("keys");
+
+        let err = init(
+            &Init {
+                name: "demo-pkg".to_string(),
+                entry: "main.sh".to_string(),
+                ver: "0.1.0".to_string(),
+                description: "a demo package".to_string(),
+                author: "nobody".to_string(),
+            },
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ServerError::ValidationError(_)));
+        assert!(
+            !project_src.join("demo-pkg").exists(),
+            "must not create the package skeleton without a key"
+        );
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    #[test]
+    fn init_records_author_in_package_info() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-init-author-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+        let keys_dir = project_src.join("keys");
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+
+        init(
+            &Init {
+                name: "demo-pkg".to_string(),
+                entry: "main.sh".to_string(),
+                ver: "0.1.0".to_string(),
+                description: "a demo package".to_string(),
+                author: "alice".to_string(),
+            },
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap();
+
+        let package_info: PackageInfo =
+            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json")).unwrap();
+        assert_eq!(package_info.author.as_deref(), Some("alice"));
+        assert_eq!(package_info.signature, None);
 
         std::fs::remove_dir_all(&project_src).ok();
     }
