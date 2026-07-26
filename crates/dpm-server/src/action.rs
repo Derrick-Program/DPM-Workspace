@@ -6,6 +6,44 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 use walkdir::WalkDir;
+pub fn keygen(obj: &Keygen, keys_dir: &Path) -> ServerResult<()> {
+    std::fs::create_dir_all(keys_dir)?;
+    let priv_path = keys_dir.join(format!("{}.priv", obj.author_id));
+    let pub_path = keys_dir.join(format!("{}.pub", obj.author_id));
+    if !obj.force && (priv_path.exists() || pub_path.exists()) {
+        return Err(ServerError::ValidationError(format!(
+            "key for author '{}' already exists at {}; pass --force to overwrite",
+            obj.author_id,
+            keys_dir.display()
+        )));
+    }
+
+    let signing_key = dpm_core::generate_signing_key()?;
+    std::fs::write(&priv_path, signing_key.to_bytes())?;
+    std::fs::write(&pub_path, signing_key.verifying_key().to_bytes())?;
+
+    // 私鑰絕對不能被 commit——即使資料 repo 自己的 .gitignore 忘了擋,
+    // 這裡也自己確保 keys/ 底下有一條 *.priv 規則。
+    let gitignore_path = keys_dir.join(".gitignore");
+    let existing = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+    if !existing.lines().any(|l| l.trim() == "*.priv") {
+        let mut updated = existing;
+        if !updated.is_empty() && !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str("*.priv\n");
+        std::fs::write(&gitignore_path, updated)?;
+    }
+
+    println!(
+        "Generated key pair for '{}':\n  private: {} (do not commit)\n  public:  {} (commit this)",
+        obj.author_id,
+        priv_path.display(),
+        pub_path.display()
+    );
+    Ok(())
+}
+
 pub fn hash(obj: &Hash, project_src: &Path) -> ServerResult<()> {
     let project_path = project_src.join(&obj.package_name);
     let hashfile = &project_path.join("hashes.json");
@@ -442,5 +480,79 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    #[test]
+    fn keygen_produces_32_byte_raw_key_files_and_a_gitignore() {
+        let keys_dir = std::env::temp_dir().join(format!(
+            "dpm-server-keygen-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&keys_dir).unwrap();
+
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+
+        let priv_bytes = std::fs::read(keys_dir.join("alice.priv")).unwrap();
+        let pub_bytes = std::fs::read(keys_dir.join("alice.pub")).unwrap();
+        assert_eq!(priv_bytes.len(), 32);
+        assert_eq!(pub_bytes.len(), 32);
+
+        let gitignore = std::fs::read_to_string(keys_dir.join(".gitignore")).unwrap();
+        assert!(gitignore.lines().any(|l| l.trim() == "*.priv"));
+
+        std::fs::remove_dir_all(&keys_dir).ok();
+    }
+
+    #[test]
+    fn keygen_refuses_to_overwrite_without_force() {
+        let keys_dir = std::env::temp_dir().join(format!(
+            "dpm-server-keygen-overwrite-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&keys_dir).unwrap();
+
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+        let err = keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ServerError::ValidationError(_)));
+
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: true,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+
+        std::fs::remove_dir_all(&keys_dir).ok();
     }
 }

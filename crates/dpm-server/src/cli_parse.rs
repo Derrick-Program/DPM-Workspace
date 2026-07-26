@@ -9,6 +9,8 @@ pub enum Commands {
     Build(Build),
     ///Create Project
     Init(Init),
+    /// Generate an ed25519 signing key pair for a package author
+    Keygen(Keygen),
 }
 
 #[derive(Args, Debug)]
@@ -98,4 +100,13 @@ pub struct Del {
     pub project_name: String,
     /// Version to remove (required if the package has more than one published version)
     pub version: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct Keygen {
+    /// Author id (e.g. a GitHub username) this key belongs to
+    pub author_id: String,
+    /// Overwrite an existing key pair for this author
+    #[arg(long)]
+    pub force: bool,
 }

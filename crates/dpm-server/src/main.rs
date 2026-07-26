@@ -26,9 +26,11 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let project_src = current_dir()?.join("packages");
     let repo_dir = current_dir()?.join("Repo");
+    let keys_dir = current_dir()?.join("keys");
     let software_repo_info = current_dir()?.join("RepoInfo.json");
     create_dir_all(&project_src)?;
     create_dir_all(&repo_dir)?;
+    create_dir_all(&keys_dir)?;
     let mut repo_info: RepoInfo;
     if !software_repo_info.exists() {
         println!("RepoInfo.json not found. Initializing an empty one.");
@@ -45,6 +47,7 @@ fn main() -> Result<()> {
         Commands::Fix(obj) => fix(obj, &mut repo_info, &project_src)?,
         Commands::Build(obj) => build(obj, &project_src, &repo_dir)?,
         Commands::Init(obj) => init(obj, &project_src)?,
+        Commands::Keygen(obj) => keygen(obj, &keys_dir)?,
     }
     JsonStorage::to_json(&repo_info, &software_repo_info)?;
     Ok(())
