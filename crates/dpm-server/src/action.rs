@@ -217,17 +217,76 @@ pub fn init(obj: &Init, project_src: &Path, keys_dir: &Path) -> ServerResult<()>
     Ok(())
 }
 
-pub fn fix(obj: &Fix, repo: &mut RepoInfo, project_src: &Path) -> ServerResult<()> {
+pub fn fix(
+    obj: &Fix,
+    repo: &mut RepoInfo,
+    project_src: &Path,
+    keys_dir: &Path,
+) -> ServerResult<()> {
     match &obj.command {
-        FixAction::Add(obj) => fix_add(obj, repo, project_src)?,
+        FixAction::Add(obj) => fix_add(obj, repo, project_src, keys_dir)?,
         FixAction::Del(obj) => fix_del(obj, repo)?,
     }
     Ok(())
 }
 
-fn fix_add(obj: &Add, repo: &mut RepoInfo, project_src: &Path) -> ServerResult<()> {
+/// `fix_add` 寫進 `RepoInfo.json` 之前的守門檢查,兩種 kind 共用:
+/// 1. `packageInfo.json` 一定要有 `author`/`signature`/`hash`。
+/// 2. `signature` 必須是 `author` 的公鑰對 `hash` 的合法簽章。
+/// 3. 如果這個套件名稱在 `repo` 裡已經有版本,新版本的 `author` 必須跟第一次
+///    發布時登記的 author 相同——這是防冒名頂替的核心檢查。沒有既有版本代表
+///    這是第一次發布,直接放行(沒有「跟誰比對」的問題)。
+fn verify_publish_authorization(
+    pk_info: &PackageInfo,
+    repo: &RepoInfo,
+    project_name: &str,
+    keys_dir: &Path,
+) -> ServerResult<()> {
+    let author = pk_info.author.as_deref().ok_or_else(|| {
+        ServerError::ValidationError(format!(
+            "{project_name}'s packageInfo.json has no author; run `dpm-server init --author <id>`"
+        ))
+    })?;
+    let signature = pk_info.signature.as_deref().ok_or_else(|| {
+        ServerError::ValidationError(format!(
+            "{project_name}'s packageInfo.json has no signature; run `dpm-server sign {project_name}` first"
+        ))
+    })?;
+
+    let pubkey_path = keys_dir.join(format!("{author}.pub"));
+    let pubkey_bytes = std::fs::read(&pubkey_path).map_err(|e| {
+        ServerError::ValidationError(format!(
+            "could not read public key for author '{author}' at {}: {e}",
+            pubkey_path.display()
+        ))
+    })?;
+    let verifying_key = dpm_core::verifying_key_from_bytes(&pubkey_bytes).map_err(|e| {
+        ServerError::ValidationError(format!("invalid public key for author '{author}': {e}"))
+    })?;
+    dpm_core::verify_hash_signature(&verifying_key, &pk_info.hash, signature).map_err(|e| {
+        ServerError::ValidationError(format!(
+            "signature verification failed for {project_name}: {e}"
+        ))
+    })?;
+
+    if let Ok(versions) = repo.versions_of(project_name) {
+        if let Some(existing) = versions.first() {
+            if existing.author.as_deref() != Some(author) {
+                return Err(ServerError::ValidationError(format!(
+                    "{project_name} was first published by author '{}', but this version is signed by '{author}' — authorship cannot change without manual review",
+                    existing.author.as_deref().unwrap_or("<unknown>")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn fix_add(obj: &Add, repo: &mut RepoInfo, project_src: &Path, keys_dir: &Path) -> ServerResult<()> {
     let path = project_src.join(&obj.project_name);
     let pk_info: PackageInfo = JsonStorage::from_json(&path.join("packageInfo.json"))?;
+
+    verify_publish_authorization(&pk_info, repo, &obj.project_name, keys_dir)?;
 
     let kind = match &obj.kind {
         AddKind::Url { url, file_name } => {
@@ -257,29 +316,36 @@ fn fix_add(obj: &Add, repo: &mut RepoInfo, project_src: &Path) -> ServerResult<(
             let bytes = response.bytes()?;
             let tmp_path = std::env::temp_dir().join(&file_name);
             std::fs::write(&tmp_path, &bytes)?;
-            let hash = dpm_core::hash_file(&tmp_path)?;
+            let downloaded_hash = dpm_core::hash_file(&tmp_path)?;
             std::fs::remove_file(&tmp_path)?;
+
+            if downloaded_hash != pk_info.hash {
+                return Err(ServerError::ValidationError(format!(
+                    "content served at {url} (hash {downloaded_hash}) does not match {}'s signed hash ({}) — run `dpm-server build`, `hash`, and `sign` again after the url's content changes",
+                    obj.project_name, pk_info.hash
+                )));
+            }
 
             PackageKind::Prebuilt {
                 url: url.clone(),
-                hash,
+                hash: pk_info.hash.clone(),
                 file_name,
             }
         }
         AddKind::Build { build } => PackageKind::Source {
             build: build.clone(),
-            hash: None,
+            hash: Some(pk_info.hash.clone()),
         },
     };
 
     let version_info = PackageVersionInfo {
         version: pk_info.version.clone(),
         kind,
-        dependencies: pk_info.dependencies,
+        dependencies: pk_info.dependencies.clone(),
         entry: None,
-        description: Some(pk_info.description),
-        author: None,
-        signature: None,
+        description: Some(pk_info.description.clone()),
+        author: pk_info.author.clone(),
+        signature: pk_info.signature.clone(),
     };
     repo.add_package_version(obj.project_name.clone(), version_info)?;
     Ok(())
@@ -316,6 +382,212 @@ fn fix_del(obj: &Del, repo: &mut RepoInfo) -> ServerResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 產生金鑰、跑 `init --author`+`hash`+`sign`,留下一份完整簽好名的
+    /// `packageInfo.json`——Task 7 之後 `fix_add` 一律先驗證作者/簽章,
+    /// 所有 `fix_add` 測試都需要這組前置。
+    fn init_hash_sign(project_src: &Path, keys_dir: &Path, name: &str, author: &str) {
+        keygen(
+            &Keygen { author_id: author.to_string(), force: false },
+            keys_dir,
+        )
+        .unwrap();
+        init(
+            &Init {
+                name: name.to_string(),
+                entry: "main.sh".to_string(),
+                ver: "0.1.0".to_string(),
+                description: "a demo package".to_string(),
+                author: author.to_string(),
+            },
+            project_src,
+            keys_dir,
+        )
+        .unwrap();
+        hash(
+            &Hash { package_name: name.to_string(), build: None },
+            project_src,
+            &project_src.join("unused-repo-dir"),
+        )
+        .unwrap();
+        sign(&Sign { name: name.to_string() }, project_src, keys_dir).unwrap();
+    }
+
+    #[test]
+    fn fix_add_rejects_a_second_version_signed_by_a_different_author() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-fix-add-author-mismatch-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+        let keys_dir = project_src.join("keys");
+
+        init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
+        let mut repo = RepoInfo::new();
+        fix_add(
+            &Add {
+                project_name: "demo-pkg".to_string(),
+                kind: AddKind::Build { build: "v1 build".to_string() },
+            },
+            &mut repo,
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap();
+
+        // 模擬「一個惡意 PR 想冒充既有作者發新版本」:同一個套件名稱,換一把
+        // 不同作者的金鑰重新 init/hash/sign 出一份新的 packageInfo.json。
+        keygen(
+            &Keygen { author_id: "mallory".to_string(), force: false },
+            &keys_dir,
+        )
+        .unwrap();
+        let info_path = project_src.join("demo-pkg").join("packageInfo.json");
+        let mut package_info: PackageInfo = JsonStorage::from_json(&info_path).unwrap();
+        package_info.version = "0.2.0".to_string();
+        package_info.author = Some("mallory".to_string());
+        package_info.signature = None;
+        JsonStorage::to_json(&package_info, &info_path).unwrap();
+        hash(
+            &Hash { package_name: "demo-pkg".to_string(), build: None },
+            &project_src,
+            &project_src.join("unused-repo-dir"),
+        )
+        .unwrap();
+        sign(
+            &Sign { name: "demo-pkg".to_string() },
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap();
+
+        let err = fix_add(
+            &Add {
+                project_name: "demo-pkg".to_string(),
+                kind: AddKind::Build { build: "v2 build".to_string() },
+            },
+            &mut repo,
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ServerError::ValidationError(_)));
+        assert_eq!(
+            repo.versions_of("demo-pkg").unwrap().len(),
+            1,
+            "the rejected v2 must not be added"
+        );
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    /// 核心「first vs. subsequent version」邏輯的正面案例:同一個作者發第二個
+    /// 版本必須成功,不能被 `verify_publish_authorization` 誤判成作者不符。
+    #[test]
+    fn fix_add_accepts_a_second_version_from_the_same_author() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-fix-add-same-author-second-version-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+        let keys_dir = project_src.join("keys");
+
+        init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
+        let mut repo = RepoInfo::new();
+        fix_add(
+            &Add {
+                project_name: "demo-pkg".to_string(),
+                kind: AddKind::Build { build: "v1 build".to_string() },
+            },
+            &mut repo,
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap();
+
+        // 同一個作者(alice)重新 init/hash/sign 出下一個版本。
+        let info_path = project_src.join("demo-pkg").join("packageInfo.json");
+        let mut package_info: PackageInfo = JsonStorage::from_json(&info_path).unwrap();
+        package_info.version = "0.2.0".to_string();
+        package_info.signature = None;
+        JsonStorage::to_json(&package_info, &info_path).unwrap();
+        hash(
+            &Hash { package_name: "demo-pkg".to_string(), build: None },
+            &project_src,
+            &project_src.join("unused-repo-dir"),
+        )
+        .unwrap();
+        sign(
+            &Sign { name: "demo-pkg".to_string() },
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap();
+
+        fix_add(
+            &Add {
+                project_name: "demo-pkg".to_string(),
+                kind: AddKind::Build { build: "v2 build".to_string() },
+            },
+            &mut repo,
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap();
+
+        assert_eq!(repo.versions_of("demo-pkg").unwrap().len(), 2);
+        assert_eq!(
+            repo.latest_version("demo-pkg").unwrap().author.as_deref(),
+            Some("alice")
+        );
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    #[test]
+    fn fix_add_rejects_a_tampered_signature() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-fix-add-bad-sig-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+        let keys_dir = project_src.join("keys");
+        init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
+
+        // 直接竄改已簽好的 signature 欄位(不重新 sign)。
+        let info_path = project_src.join("demo-pkg").join("packageInfo.json");
+        let mut package_info: PackageInfo = JsonStorage::from_json(&info_path).unwrap();
+        package_info.signature = Some("0".repeat(128));
+        JsonStorage::to_json(&package_info, &info_path).unwrap();
+
+        let mut repo = RepoInfo::new();
+        let err = fix_add(
+            &Add {
+                project_name: "demo-pkg".to_string(),
+                kind: AddKind::Build { build: "cargo build".to_string() },
+            },
+            &mut repo,
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ServerError::ValidationError(_)));
+        assert!(repo.versions_of("demo-pkg").is_err());
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
 
     /// `project_src` used to come from a process-wide `OnceLock`, so nothing
     /// in this file could be unit tested without a real global. Now that
@@ -525,29 +797,8 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&project_src).unwrap();
-
         let keys_dir = project_src.join("keys");
-        keygen(
-            &Keygen {
-                author_id: "alice".to_string(),
-                force: false,
-            },
-            &keys_dir,
-        )
-        .unwrap();
-
-        init(
-            &Init {
-                name: "demo-pkg".to_string(),
-                entry: "main.sh".to_string(),
-                ver: "0.1.0".to_string(),
-                description: "a demo package".to_string(),
-                author: "alice".to_string(),
-            },
-            &project_src,
-            &keys_dir,
-        )
-        .unwrap();
+        init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
 
         let mut repo = RepoInfo::new();
         let add = Add {
@@ -556,13 +807,16 @@ mod tests {
                 build: "cargo build --release".to_string(),
             },
         };
-        fix_add(&add, &mut repo, &project_src).unwrap();
+        fix_add(&add, &mut repo, &project_src, &keys_dir).unwrap();
 
         let version_info = repo.latest_version("demo-pkg").unwrap();
         assert_eq!(version_info.version, "0.1.0");
+        assert_eq!(version_info.author.as_deref(), Some("alice"));
+        assert!(version_info.signature.is_some());
         match &version_info.kind {
-            PackageKind::Source { build, .. } => {
+            PackageKind::Source { build, hash } => {
                 assert_eq!(build, "cargo build --release");
+                assert!(hash.is_some());
             }
             other => panic!("expected PackageKind::Source, got {other:?}"),
         }
@@ -588,29 +842,8 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&project_src).unwrap();
-
         let keys_dir = project_src.join("keys");
-        keygen(
-            &Keygen {
-                author_id: "alice".to_string(),
-                force: false,
-            },
-            &keys_dir,
-        )
-        .unwrap();
-
-        init(
-            &Init {
-                name: "demo-pkg".to_string(),
-                entry: "main.sh".to_string(),
-                ver: "0.1.0".to_string(),
-                description: "a demo package".to_string(),
-                author: "alice".to_string(),
-            },
-            &project_src,
-            &keys_dir,
-        )
-        .unwrap();
+        init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
 
         let mut repo = RepoInfo::new();
         let add = Add {
@@ -620,7 +853,7 @@ mod tests {
                 file_name: None,
             },
         };
-        let err = fix_add(&add, &mut repo, &project_src).unwrap_err();
+        let err = fix_add(&add, &mut repo, &project_src, &keys_dir).unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
         assert!(
             repo.versions_of("demo-pkg").is_err(),

@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     }
     match &cli.command {
         Commands::Hash(obj) => hash(obj, &project_src, &repo_dir)?,
-        Commands::Fix(obj) => fix(obj, &mut repo_info, &project_src)?,
+        Commands::Fix(obj) => fix(obj, &mut repo_info, &project_src, &keys_dir)?,
         Commands::Build(obj) => build(obj, &project_src, &repo_dir)?,
         Commands::Init(obj) => init(obj, &project_src, &keys_dir)?,
         Commands::Keygen(obj) => keygen(obj, &keys_dir)?,
