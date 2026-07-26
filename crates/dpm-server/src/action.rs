@@ -135,9 +135,9 @@ fn source_repo_commit_hash(project_path: &Path) -> ServerResult<String> {
     let head = repo
         .head()
         .map_err(|e| ServerError::ValidationError(format!("could not resolve HEAD: {e}")))?;
-    let commit = head.peel_to_commit().map_err(|e| {
-        ServerError::ValidationError(format!("could not resolve HEAD commit: {e}"))
-    })?;
+    let commit = head
+        .peel_to_commit()
+        .map_err(|e| ServerError::ValidationError(format!("could not resolve HEAD commit: {e}")))?;
     Ok(commit.id().to_string())
 }
 
@@ -253,6 +253,21 @@ fn verify_publish_authorization(
         ))
     })?;
 
+    // `author` comes straight from an attacker-controlled packageInfo.json in
+    // a publish PR — it must not be usable as a path component. `Path::join`
+    // discards the base entirely on an absolute string, and `..` segments
+    // escape `keys_dir` either way, which would let a malicious author id
+    // point the "public key" read at an arbitrary file on disk.
+    if author.is_empty()
+        || !author
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(ServerError::ValidationError(format!(
+            "author id '{author}' contains invalid characters — must match [A-Za-z0-9_-]+"
+        )));
+    }
+
     let pubkey_path = keys_dir.join(format!("{author}.pub"));
     let pubkey_bytes = std::fs::read(&pubkey_path).map_err(|e| {
         ServerError::ValidationError(format!(
@@ -282,7 +297,12 @@ fn verify_publish_authorization(
     Ok(())
 }
 
-fn fix_add(obj: &Add, repo: &mut RepoInfo, project_src: &Path, keys_dir: &Path) -> ServerResult<()> {
+fn fix_add(
+    obj: &Add,
+    repo: &mut RepoInfo,
+    project_src: &Path,
+    keys_dir: &Path,
+) -> ServerResult<()> {
     let path = project_src.join(&obj.project_name);
     let pk_info: PackageInfo = JsonStorage::from_json(&path.join("packageInfo.json"))?;
 
@@ -332,10 +352,26 @@ fn fix_add(obj: &Add, repo: &mut RepoInfo, project_src: &Path, keys_dir: &Path) 
                 file_name,
             }
         }
-        AddKind::Build { build } => PackageKind::Source {
-            build: build.clone(),
-            hash: Some(pk_info.hash.clone()),
-        },
+        AddKind::Build { build } => {
+            // Same check as the Url arm above, mirrored for source packages:
+            // recompute the hash this `--build` value would produce and
+            // compare it against the signed hash, so someone with
+            // RepoInfo.json write access (but no signing key) can't swap the
+            // build command out from under an already-signed packageInfo.json.
+            let commit = source_repo_commit_hash(&path)?;
+            let recomputed_hash = dpm_core::hash_bytes(format!("{build}\n{commit}").as_bytes());
+            if recomputed_hash != pk_info.hash {
+                return Err(ServerError::ValidationError(format!(
+                    "build command {build:?} (hash {recomputed_hash}) does not match {}'s signed hash ({}) — run `dpm-server hash --build`/`sign` again after the build command changes",
+                    obj.project_name, pk_info.hash
+                )));
+            }
+
+            PackageKind::Source {
+                build: build.clone(),
+                hash: Some(pk_info.hash.clone()),
+            }
+        }
     };
 
     let version_info = PackageVersionInfo {
@@ -388,7 +424,10 @@ mod tests {
     /// 所有 `fix_add` 測試都需要這組前置。
     fn init_hash_sign(project_src: &Path, keys_dir: &Path, name: &str, author: &str) {
         keygen(
-            &Keygen { author_id: author.to_string(), force: false },
+            &Keygen {
+                author_id: author.to_string(),
+                force: false,
+            },
             keys_dir,
         )
         .unwrap();
@@ -405,12 +444,73 @@ mod tests {
         )
         .unwrap();
         hash(
-            &Hash { package_name: name.to_string(), build: None },
+            &Hash {
+                package_name: name.to_string(),
+                build: None,
+            },
             project_src,
             &project_src.join("unused-repo-dir"),
         )
         .unwrap();
-        sign(&Sign { name: name.to_string() }, project_src, keys_dir).unwrap();
+        sign(
+            &Sign {
+                name: name.to_string(),
+            },
+            project_src,
+            keys_dir,
+        )
+        .unwrap();
+    }
+
+    /// Same as `init_hash_sign`, but for `AddKind::Build` callers: signs the
+    /// build-command hash (`source_repo_commit_hash` + `build_cmd`) instead
+    /// of the file-walk hash, so it matches what `fix_add`'s `Build` arm
+    /// recomputes and compares against. Requires `project_src` itself to be
+    /// a git repo (see `init_git_repo`).
+    fn init_hash_sign_for_build(
+        project_src: &Path,
+        keys_dir: &Path,
+        name: &str,
+        author: &str,
+        build_cmd: &str,
+    ) {
+        keygen(
+            &Keygen {
+                author_id: author.to_string(),
+                force: false,
+            },
+            keys_dir,
+        )
+        .unwrap();
+        init(
+            &Init {
+                name: name.to_string(),
+                entry: "main.sh".to_string(),
+                ver: "0.1.0".to_string(),
+                description: "a demo package".to_string(),
+                author: author.to_string(),
+            },
+            project_src,
+            keys_dir,
+        )
+        .unwrap();
+        hash(
+            &Hash {
+                package_name: name.to_string(),
+                build: Some(build_cmd.to_string()),
+            },
+            project_src,
+            &project_src.join("unused-repo-dir"),
+        )
+        .unwrap();
+        sign(
+            &Sign {
+                name: name.to_string(),
+            },
+            project_src,
+            keys_dir,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -426,12 +526,15 @@ mod tests {
         std::fs::create_dir_all(&project_src).unwrap();
         let keys_dir = project_src.join("keys");
 
-        init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
+        init_git_repo(&project_src);
+        init_hash_sign_for_build(&project_src, &keys_dir, "demo-pkg", "alice", "v1 build");
         let mut repo = RepoInfo::new();
         fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
-                kind: AddKind::Build { build: "v1 build".to_string() },
+                kind: AddKind::Build {
+                    build: "v1 build".to_string(),
+                },
             },
             &mut repo,
             &project_src,
@@ -442,7 +545,10 @@ mod tests {
         // 模擬「一個惡意 PR 想冒充既有作者發新版本」:同一個套件名稱,換一把
         // 不同作者的金鑰重新 init/hash/sign 出一份新的 packageInfo.json。
         keygen(
-            &Keygen { author_id: "mallory".to_string(), force: false },
+            &Keygen {
+                author_id: "mallory".to_string(),
+                force: false,
+            },
             &keys_dir,
         )
         .unwrap();
@@ -453,13 +559,18 @@ mod tests {
         package_info.signature = None;
         JsonStorage::to_json(&package_info, &info_path).unwrap();
         hash(
-            &Hash { package_name: "demo-pkg".to_string(), build: None },
+            &Hash {
+                package_name: "demo-pkg".to_string(),
+                build: None,
+            },
             &project_src,
             &project_src.join("unused-repo-dir"),
         )
         .unwrap();
         sign(
-            &Sign { name: "demo-pkg".to_string() },
+            &Sign {
+                name: "demo-pkg".to_string(),
+            },
             &project_src,
             &keys_dir,
         )
@@ -468,7 +579,9 @@ mod tests {
         let err = fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
-                kind: AddKind::Build { build: "v2 build".to_string() },
+                kind: AddKind::Build {
+                    build: "v2 build".to_string(),
+                },
             },
             &mut repo,
             &project_src,
@@ -500,12 +613,15 @@ mod tests {
         std::fs::create_dir_all(&project_src).unwrap();
         let keys_dir = project_src.join("keys");
 
-        init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
+        init_git_repo(&project_src);
+        init_hash_sign_for_build(&project_src, &keys_dir, "demo-pkg", "alice", "v1 build");
         let mut repo = RepoInfo::new();
         fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
-                kind: AddKind::Build { build: "v1 build".to_string() },
+                kind: AddKind::Build {
+                    build: "v1 build".to_string(),
+                },
             },
             &mut repo,
             &project_src,
@@ -520,13 +636,18 @@ mod tests {
         package_info.signature = None;
         JsonStorage::to_json(&package_info, &info_path).unwrap();
         hash(
-            &Hash { package_name: "demo-pkg".to_string(), build: None },
+            &Hash {
+                package_name: "demo-pkg".to_string(),
+                build: Some("v2 build".to_string()),
+            },
             &project_src,
             &project_src.join("unused-repo-dir"),
         )
         .unwrap();
         sign(
-            &Sign { name: "demo-pkg".to_string() },
+            &Sign {
+                name: "demo-pkg".to_string(),
+            },
             &project_src,
             &keys_dir,
         )
@@ -535,7 +656,9 @@ mod tests {
         fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
-                kind: AddKind::Build { build: "v2 build".to_string() },
+                kind: AddKind::Build {
+                    build: "v2 build".to_string(),
+                },
             },
             &mut repo,
             &project_src,
@@ -576,7 +699,9 @@ mod tests {
         let err = fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
-                kind: AddKind::Build { build: "cargo build".to_string() },
+                kind: AddKind::Build {
+                    build: "cargo build".to_string(),
+                },
             },
             &mut repo,
             &project_src,
@@ -798,7 +923,14 @@ mod tests {
         ));
         std::fs::create_dir_all(&project_src).unwrap();
         let keys_dir = project_src.join("keys");
-        init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
+        init_git_repo(&project_src);
+        init_hash_sign_for_build(
+            &project_src,
+            &keys_dir,
+            "demo-pkg",
+            "alice",
+            "cargo build --release",
+        );
 
         let mut repo = RepoInfo::new();
         let add = Add {
@@ -820,6 +952,52 @@ mod tests {
             }
             other => panic!("expected PackageKind::Source, got {other:?}"),
         }
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    /// Mirrors the Url arm's downloaded-content hash check (untestable here
+    /// without a network call) for the `Build` arm: RepoInfo.json write
+    /// access without the signing key must not be able to swap the build
+    /// command out from under an already-signed packageInfo.json.
+    #[test]
+    fn fix_add_rejects_a_build_command_that_does_not_match_the_signed_hash() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-fix-add-build-hash-mismatch-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+        let keys_dir = project_src.join("keys");
+        init_git_repo(&project_src);
+        init_hash_sign_for_build(
+            &project_src,
+            &keys_dir,
+            "demo-pkg",
+            "alice",
+            "cargo build --release",
+        );
+
+        let mut repo = RepoInfo::new();
+        let err = fix_add(
+            &Add {
+                project_name: "demo-pkg".to_string(),
+                kind: AddKind::Build {
+                    // Signed hash was computed over "cargo build --release";
+                    // this doesn't match it.
+                    build: "cargo build --release --features malicious".to_string(),
+                },
+            },
+            &mut repo,
+            &project_src,
+            &keys_dir,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ServerError::ValidationError(_)));
+        assert!(repo.versions_of("demo-pkg").is_err());
 
         std::fs::remove_dir_all(&project_src).ok();
     }
@@ -1116,9 +1294,12 @@ mod tests {
         .unwrap();
 
         let package_info: PackageInfo =
-            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json"))
-                .unwrap();
-        assert_eq!(package_info.hash.len(), 64, "must be a full blake3 hex digest");
+            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json")).unwrap();
+        assert_eq!(
+            package_info.hash.len(),
+            64,
+            "must be a full blake3 hex digest"
+        );
 
         // 同樣的 build_command,重跑一次必須得到一樣的 hash(HEAD 沒變)。
         hash(
@@ -1131,8 +1312,7 @@ mod tests {
         )
         .unwrap();
         let package_info_again: PackageInfo =
-            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json"))
-                .unwrap();
+            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json")).unwrap();
         assert_eq!(package_info.hash, package_info_again.hash);
 
         // 換一個 build_command,hash 必須不同。
@@ -1146,8 +1326,7 @@ mod tests {
         )
         .unwrap();
         let package_info_different: PackageInfo =
-            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json"))
-                .unwrap();
+            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json")).unwrap();
         assert_ne!(package_info.hash, package_info_different.hash);
 
         std::fs::remove_dir_all(&project_src).ok();
@@ -1209,8 +1388,7 @@ mod tests {
         .unwrap();
 
         let package_info: PackageInfo =
-            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json"))
-                .unwrap();
+            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json")).unwrap();
         assert_eq!(package_info.hash, expected_hash);
 
         std::fs::remove_dir_all(&root).ok();
@@ -1268,8 +1446,7 @@ mod tests {
         .unwrap();
 
         let package_info: PackageInfo =
-            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json"))
-                .unwrap();
+            JsonStorage::from_json(&project_src.join("demo-pkg").join("packageInfo.json")).unwrap();
         let signature = package_info.signature.expect("sign must set a signature");
 
         let pubkey_bytes = std::fs::read(keys_dir.join("alice.pub")).unwrap();
