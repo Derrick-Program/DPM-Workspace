@@ -3,7 +3,10 @@ use colored::Colorize;
 use dpm_core::zip_folder;
 use dpm_core::CoreError;
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use walkdir::WalkDir;
 pub fn keygen(obj: &Keygen, keys_dir: &Path) -> ServerResult<()> {
@@ -19,7 +22,13 @@ pub fn keygen(obj: &Keygen, keys_dir: &Path) -> ServerResult<()> {
     }
 
     let signing_key = dpm_core::generate_signing_key()?;
-    std::fs::write(&priv_path, signing_key.to_bytes())?;
+    // 私鑰是機密——用 0600(僅擁有者可讀寫)寫入,不吃 umask 預設的 0644。
+    let mut priv_opts = OpenOptions::new();
+    priv_opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    priv_opts.mode(0o600);
+    let mut priv_file = priv_opts.open(&priv_path)?;
+    priv_file.write_all(&signing_key.to_bytes())?;
     std::fs::write(&pub_path, signing_key.verifying_key().to_bytes())?;
 
     // 私鑰絕對不能被 commit——即使資料 repo 自己的 .gitignore 忘了擋,
@@ -552,6 +561,45 @@ mod tests {
             &keys_dir,
         )
         .unwrap();
+
+        std::fs::remove_dir_all(&keys_dir).ok();
+    }
+
+    /// The private key is a real secret — whoever can read it can sign
+    /// packages as this author. `fs::write`'s default umask-based mode
+    /// (typically 0644) leaves it group/world-readable, so `keygen()` opens
+    /// it with an explicit 0600 mode instead. This pins that down against
+    /// the actual file, not just "did keygen not error".
+    #[test]
+    #[cfg(unix)]
+    fn keygen_writes_private_key_with_0600_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let keys_dir = std::env::temp_dir().join(format!(
+            "dpm-server-keygen-perms-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&keys_dir).unwrap();
+
+        keygen(
+            &Keygen {
+                author_id: "alice".to_string(),
+                force: false,
+            },
+            &keys_dir,
+        )
+        .unwrap();
+
+        let mode = std::fs::metadata(keys_dir.join("alice.priv"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
 
         std::fs::remove_dir_all(&keys_dir).ok();
     }
