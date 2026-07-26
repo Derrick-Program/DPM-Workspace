@@ -8,24 +8,38 @@ use std::{
     path::Path,
     process::{Command, Stdio},
 };
-/// 「官方」套件來源的預設 git repo 位址——之後這個 workspace 要是搬到別的
-/// GitHub 帳號/repo,只需要改這一行(注意:這是 client 預設拉套件索引的來源,
-/// 跟 workspace 原始碼本身的 repo——見根 `Cargo.toml` 的 `[workspace.package]
-/// repository`——是兩件事,可能指向不同的 repo)。`repo_info`(RepoInfo.json 的
-/// raw content URL)從這裡自動推導,不需要另外維護第二份字串跟著手動同步。
-const OFFICIAL_REPO_URL: &str = "https://github.com/Derrick-Program/DPM-Server";
+/// 「官方」套件來源的預設 git repo 位址——見上方模組文件註解。這次改成
+/// `pub(crate)` 是因為簽章驗證(`action.rs` 的 `sync_source`/`install_resolved`)
+/// 要拿它跟 `Source.repo_url` 比對,判斷是否該套用簽章驗證這個安全閘門
+/// (刻意比對這個寫死的常數,不是使用者本機 `config.json` 可以自己編輯的
+/// `alias` 字串)。
+pub(crate) const OFFICIAL_REPO_URL: &str = "https://github.com/Derrick-Program/DPM-Server";
 
-/// 把 `https://github.com/<owner>/<repo>` 轉成該 repo 在 `main` 分支上
-/// `RepoInfo.json` 的 raw content URL。
-fn official_repo_info_url(repo_url: &str) -> String {
+/// 把 `https://github.com/<owner>/<repo>` 轉成該 repo 在 `main` 分支上某個
+/// 檔案路徑的 raw content URL。`official_repo_info_url`/`official_key_url`
+/// 共用這個轉換,只差要抓的路徑。
+fn raw_content_url(repo_url: &str, path: &str) -> String {
     format!(
-        "{}/main/RepoInfo.json",
+        "{}/main/{path}",
         repo_url.replacen(
             "https://github.com/",
             "https://raw.githubusercontent.com/",
             1
         )
     )
+}
+
+/// 把 `https://github.com/<owner>/<repo>` 轉成該 repo 在 `main` 分支上
+/// `RepoInfo.json` 的 raw content URL。
+fn official_repo_info_url(repo_url: &str) -> String {
+    raw_content_url(repo_url, "RepoInfo.json")
+}
+
+/// 把 `https://github.com/<owner>/<repo>` 轉成該 repo 在 `main` 分支上
+/// `keys/<author_id>.pub` 的 raw content URL——跟 `official_repo_info_url`
+/// 同一個 host 轉換規則,只差路徑。
+pub(crate) fn official_key_url(repo_url: &str, author_id: &str) -> String {
+    raw_content_url(repo_url, &format!("keys/{author_id}.pub"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -462,6 +476,14 @@ mod tests {
         assert_eq!(
             official_repo_info_url("https://github.com/Derrick-Program/DPM-Server"),
             "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/RepoInfo.json"
+        );
+    }
+
+    #[test]
+    fn official_key_url_derives_raw_content_url_for_an_author() {
+        assert_eq!(
+            official_key_url("https://github.com/Derrick-Program/DPM-Server", "alice"),
+            "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/keys/alice.pub"
         );
     }
 }
