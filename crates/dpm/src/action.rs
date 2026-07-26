@@ -1093,6 +1093,65 @@ mod install_resolved_tests {
         );
     }
 
+    /// Minor 2: every other test in this module asserts REJECTION. This is
+    /// the missing happy-path counterpart — a genuinely valid signature must
+    /// be accepted and let the install proceed past the verification gate.
+    /// The package's download `url` points at an address nothing is
+    /// listening on, so the install can't actually complete; the point is
+    /// only that the resulting error is a download/network failure, not the
+    /// `"INSECURE"` gate rejection — proving the flow reached past
+    /// signature verification instead of being blocked by it.
+    #[tokio::test]
+    async fn install_resolved_accepts_a_genuinely_valid_signature_and_proceeds_past_the_gate() {
+        let signing_key = dpm_core::generate_signing_key().unwrap();
+        let pubkey_bytes = signing_key.verifying_key().to_bytes().to_vec();
+        let hash = "d".repeat(64);
+        let signature = dpm_core::sign_hash(&signing_key, &hash);
+
+        let key_url = serve_once(pubkey_bytes);
+
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+        let setting = Setting {
+            sources: vec![Source {
+                alias: "official".to_string(),
+                repo_url: key_url.clone(),
+                repo_info: key_url,
+            }],
+        };
+        let action = ActionInfo::new(ctx, vec![], false, setting);
+
+        let pkg = DbPackage::new(
+            "official",
+            "valid-pkg",
+            "1.0.0",
+            "prebuilt",
+            // Nothing listens on this port — `download_file` must fail
+            // here, well past the signature-verification gate.
+            Some("http://127.0.0.1:1/valid.zip".to_string()),
+            Some(hash),
+            Some("valid.zip".to_string()),
+            None,
+            "test",
+            None,
+            None,
+            Some("alice".to_string()),
+            Some(signature),
+        );
+        let all_packages = vec![pkg];
+        let is = vec![(None, "valid-pkg".to_string(), None)];
+
+        let err = action
+            .install_resolved_with_gate(&all_packages, &is, |_| true)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("INSECURE"),
+            "a valid signature must not be rejected by the INSECURE gate, got: {msg}"
+        );
+    }
+
     #[tokio::test]
     async fn install_resolved_rejects_a_package_missing_author_or_signature_when_official() {
         let root = tempfile::tempdir().unwrap();
