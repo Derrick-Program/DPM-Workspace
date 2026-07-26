@@ -290,6 +290,8 @@ impl ActionInfo {
                         version_info.description.as_deref().unwrap_or(""),
                         version_info.entry.clone(),
                         dependencies,
+                        None, // Task 10 會換成 version_info.author.clone()
+                        None, // Task 10 會換成 version_info.signature.clone()
                     ))
                     .await?;
             }

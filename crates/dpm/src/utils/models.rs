@@ -17,6 +17,11 @@ pub struct DbPackage {
     pub description: String,
     pub entry: Option<String>,
     pub dependencies: Option<Vec<Dependency>>,
+    /// 發布這個版本的作者 id——只有官方來源(`repo_url == OFFICIAL_REPO_URL`)
+    /// 的套件才會有值,第三方來源永遠是 `None`。
+    pub author: Option<String>,
+    /// `dpm-server sign` 簽出來的 hex 簽章,簽的是 `hash` 欄位。
+    pub signature: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -33,6 +38,8 @@ impl DbPackage {
         description: &str,
         entry: Option<String>,
         dependencies: Option<Vec<Dependency>>,
+        author: Option<String>,
+        signature: Option<String>,
     ) -> Self {
         DbPackage {
             source: source.to_owned(),
@@ -46,6 +53,8 @@ impl DbPackage {
             description: description.to_owned(),
             entry,
             dependencies,
+            author,
+            signature,
         }
     }
 

@@ -189,7 +189,7 @@ mod tests {
         ctx_a
             .db
             .insert(crate::DbPackage::new(
-                "official", "foo", "1.0.0", "prebuilt", None, None, None, None, "", None, None,
+                "official", "foo", "1.0.0", "prebuilt", None, None, None, None, "", None, None, None, None,
             ))
             .await
             .unwrap();

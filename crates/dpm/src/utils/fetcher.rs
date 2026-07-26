@@ -149,6 +149,8 @@ mod tests {
             "test fixture",
             Some("main".to_string()),
             None,
+            None,
+            None,
         )
     }
 
