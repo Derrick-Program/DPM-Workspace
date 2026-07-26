@@ -35,7 +35,7 @@ pub use utils::*;
 
 pub async fn entry(ctx: Context, config: Cli) -> ClientResult<()> {
     let system_controller = SystemController::new(ctx.scope);
-    let config_path = ctx.config_dir.join("config.json");
+    let config_path = ctx.config_path();
     let setting_config = if !config_path.exists() {
         let setting = system_controller.init_first_run(&ctx).await?;
         for source in &setting.sources {

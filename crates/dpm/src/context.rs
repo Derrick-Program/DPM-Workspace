@@ -75,6 +75,13 @@ async fn open_db(main_dir: &std::path::Path) -> ClientResult<Db> {
 }
 
 impl Context {
+    /// The one place `"config.json"` is spelled out — `system.rs`,
+    /// `action.rs`, and `lib.rs` all used to join it onto `config_dir`
+    /// independently.
+    pub fn config_path(&self) -> PathBuf {
+        self.config_dir.join("config.json")
+    }
+
     /// Production constructor. Resolves `scope`'s real paths, creates
     /// `main_dir` (fixing ownership under `--system`) if it doesn't exist
     /// yet, and opens the real local package database under it.

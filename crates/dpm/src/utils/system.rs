@@ -276,7 +276,7 @@ impl SystemController {
     /// the same call — there's no bool to let those two facts drift apart.
     pub async fn init_first_run(&self, ctx: &Context) -> ClientResult<Setting> {
         self.bootstrap_dirs(ctx)?;
-        let config_path = ctx.config_dir.join("config.json");
+        let config_path = ctx.config_path();
         let default_setting = Setting {
             sources: vec![Source {
                 alias: "official".to_string(),
@@ -294,7 +294,7 @@ impl SystemController {
     /// the existing config back.
     pub async fn init_existing(&self, ctx: &Context) -> ClientResult<Setting> {
         self.bootstrap_dirs(ctx)?;
-        let config_path = ctx.config_dir.join("config.json");
+        let config_path = ctx.config_path();
         Ok(JsonStorage::from_json(&config_path)?)
     }
 }

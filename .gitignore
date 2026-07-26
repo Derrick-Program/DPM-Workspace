@@ -4,5 +4,11 @@
 *.lock.db
 .DS_Store
 .env
+.env.*
+*.pem
+*.key
+credentials.json
+service-account.json
+.infisical-token
 .vscode/
 .superpowers/

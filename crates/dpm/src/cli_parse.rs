@@ -85,7 +85,7 @@ pub enum Commands {
         pn: Vec<String>,
     },
     /// Upgrade Self
-    #[command(name = "upgradeSelf", visible_aliases = ["US", "UPS", "grades"])]
+    #[command(visible_aliases = ["US", "UPS", "grades"])]
     UpgradeSelf {
         #[arg(short, long)]
         verbose: bool,

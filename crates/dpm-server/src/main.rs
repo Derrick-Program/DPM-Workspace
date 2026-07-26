@@ -36,7 +36,7 @@ fn main() -> Result<()> {
     } else {
         println!("Loading RepoInfo.json...");
         repo_info = JsonStorage::from_json(&software_repo_info).unwrap_or_else(|_| {
-            println!("Failed to parse RepoInfo.json. Initializing as empty.");
+            eprintln!("Warning: failed to parse RepoInfo.json. Initializing as empty — saving after this run will overwrite the unparseable file.");
             RepoInfo::new()
         });
     }

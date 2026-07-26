@@ -85,10 +85,21 @@ impl ActionInfo {
         Ok((all_packages, is, isnot))
     }
 
-    pub async fn install(&self) -> ClientResult<()> {
-        let (all_packages, is, isnot) = self.parsed_packages().await?;
+    /// Resolves every `is` spec (dpm-managed packages, matched by name
+    /// against the local index) to a concrete `(source, name, version)` and
+    /// fetches/builds + places each one. Shared by `install()` (fresh
+    /// installs) and `upgrade()` — installing over an already-installed
+    /// `install_path` re-swaps it in via `place_package`'s existing
+    /// atomic-upgrade path, so "resolve to the best matching version and
+    /// (re)install it" already *is* an upgrade; `upgrade()` used to just
+    /// debug-print these names instead of calling this.
+    async fn install_resolved(
+        &self,
+        all_packages: &[DbPackage],
+        is: &[ParsedInstallSpec],
+    ) -> ClientResult<()> {
         if !is.is_empty() {
-            let resolved = resolve_install_set(&all_packages, &is)?;
+            let resolved = resolve_install_set(all_packages, is)?;
             for (source_alias, name, version) in resolved {
                 let pkg = name.as_str();
                 let repo_package_info = all_packages
@@ -154,6 +165,12 @@ impl ActionInfo {
                 // staging_root/previous 的舊版本一起清掉。
             }
         }
+        Ok(())
+    }
+
+    pub async fn install(&self) -> ClientResult<()> {
+        let (all_packages, is, isnot) = self.parsed_packages().await?;
+        self.install_resolved(&all_packages, &is).await?;
         if !isnot.is_empty() {
             for pkg in isnot {
                 self.system_action.install_package(&pkg)?;
@@ -295,7 +312,7 @@ impl ActionInfo {
     }
 
     pub async fn source(&self, action: SourceAction) -> ClientResult<()> {
-        let config_path = self.ctx.config_dir.join("config.json");
+        let config_path = self.ctx.config_path();
         let mut setting: Setting = JsonStorage::from_json(&config_path)?;
 
         match action {
@@ -412,12 +429,8 @@ impl ActionInfo {
     }
 
     pub async fn upgrade(&self) -> ClientResult<()> {
-        let (_, is, isnot) = self.parsed_packages().await?;
-        if !is.is_empty() {
-            for (_, pkg, _) in is {
-                println!("{:#?}", pkg);
-            }
-        }
+        let (all_packages, is, isnot) = self.parsed_packages().await?;
+        self.install_resolved(&all_packages, &is).await?;
         if !isnot.is_empty() {
             for pkg in isnot {
                 self.system_action.upgrade_package(&pkg)?;

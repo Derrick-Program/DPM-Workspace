@@ -7,7 +7,7 @@ use std::fs::File;
 use std::path::Path;
 use walkdir::WalkDir;
 pub fn hash(obj: &Hash, project_src: &Path) -> ServerResult<()> {
-    let project_path = project_src.join(&obj.packagename);
+    let project_path = project_src.join(&obj.package_name);
     let hashfile = &project_path.join("hashes.json");
     let project_info = &project_path.join("packageInfo.json");
     let mut hashes: HashMap<String, String> =
@@ -15,7 +15,7 @@ pub fn hash(obj: &Hash, project_src: &Path) -> ServerResult<()> {
     let mut counter: i32 = 0;
     if !project_path.exists() {
         return Err(ServerError::Core(CoreError::PackageNotFound(
-            obj.packagename.clone(),
+            obj.package_name.clone(),
         )));
     }
     for entry in WalkDir::new(&project_path) {
@@ -41,14 +41,11 @@ pub fn hash(obj: &Hash, project_src: &Path) -> ServerResult<()> {
     println!(
         "{} {} {} {}",
         counter,
-        hashfile.file_name().unwrap().to_str().unwrap().yellow(),
+        "hashes.json".yellow(),
         "===>".green(),
         hash.bold().blue(),
     );
-    hashes.insert(
-        hashfile.file_name().unwrap().to_str().unwrap().to_string(),
-        hash.clone(),
-    );
+    hashes.insert("hashes.json".to_string(), hash.clone());
     JsonStorage::to_json(&hashes, hashfile)?;
     let mut package_info: PackageInfo = JsonStorage::from_json(project_info)?;
     package_info.hash = hash;
@@ -57,13 +54,13 @@ pub fn hash(obj: &Hash, project_src: &Path) -> ServerResult<()> {
 }
 
 pub fn build(obj: &Build, project_src: &Path, repo_dir: &Path) -> ServerResult<()> {
-    let project_path = project_src.join(&obj.packagename);
+    let project_path = project_src.join(&obj.package_name);
     if !project_path.exists() {
         return Err(ServerError::Core(CoreError::PackageNotFound(
-            obj.packagename.clone(),
+            obj.package_name.clone(),
         )));
     }
-    let zip_file_path = repo_dir.join(format!("{}.zip", obj.packagename));
+    let zip_file_path = repo_dir.join(format!("{}.zip", obj.package_name));
     zip_folder(&project_path, &zip_file_path)?;
     Ok(())
 }
@@ -258,7 +255,7 @@ mod tests {
 
         build(
             &Build {
-                packagename: "demo-pkg".to_string(),
+                package_name: "demo-pkg".to_string(),
             },
             &project_src,
             &repo_dir,
@@ -302,7 +299,7 @@ mod tests {
 
         hash(
             &Hash {
-                packagename: "demo-pkg".to_string(),
+                package_name: "demo-pkg".to_string(),
             },
             &project_src,
         )

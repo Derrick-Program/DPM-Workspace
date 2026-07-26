@@ -14,13 +14,13 @@ pub enum Commands {
 #[derive(Args, Debug)]
 pub struct Hash {
     /// Project Name
-    pub packagename: String,
+    pub package_name: String,
 }
 
 #[derive(Args, Debug)]
 pub struct Build {
     /// Project Name
-    pub packagename: String,
+    pub package_name: String,
 }
 #[derive(Args, Debug)]
 pub struct Init {
