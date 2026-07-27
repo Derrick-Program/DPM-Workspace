@@ -625,6 +625,27 @@ impl RepoInfo {
         versions.push(info);
         Ok(())
     }
+
+    /// 移除某套件的特定版本。移除後若該套件已無任何版本,連同套件名稱一起移除。
+    pub fn remove_package_version(
+        &mut self,
+        package_name: &str,
+        version: &str,
+    ) -> CoreResult<PackageVersionInfo> {
+        let versions = self
+            .packages
+            .get_mut(package_name)
+            .ok_or_else(|| CoreError::PackageNotFound(package_name.to_string()))?;
+        let idx = versions
+            .iter()
+            .position(|v| v.version == version)
+            .ok_or_else(|| CoreError::PackageNotFound(format!("{package_name}@{version}")))?;
+        let removed = versions.remove(idx);
+        if versions.is_empty() {
+            self.packages.remove(package_name);
+        }
+        Ok(removed)
+    }
 }
 
 #[cfg(feature = "client")]
