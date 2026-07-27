@@ -1,9 +1,9 @@
 mod config_layer;
 mod error;
 mod zip_file;
+pub use config_layer::*;
 pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use ed25519_dalek::{Signer, Verifier};
-pub use config_layer::*;
 pub use error::*;
 use serde::{Deserialize, Serialize};
 use serde_json::to_writer_pretty;

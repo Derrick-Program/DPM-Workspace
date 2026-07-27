@@ -64,6 +64,15 @@ dpm --system list -l
 
 不存在會報 `PackageNotFound`;存在於多個 source 會報 `AmbiguousPackage`,需先 `source remove` 掉不要的來源再重試。
 
+### 設定檔(config.toml)
+
+`dpm` 的設定分三層,後者覆寫前者:系統層(`/etc/dpm/config.toml`,Linux;`/Library/Application Support/com.duacodie.dpm/config.toml`,macOS,唯讀,系統管理員維護)< 使用者層(`dpm` 自動產生與寫入)< 環境變數。`dpm source add/remove` 只會改使用者層。
+
+```bash
+dpm gen-config          # 產生使用者層預設設定檔
+dpm gen-config --force  # 已存在時強制覆寫
+```
+
 ### 版本約束語法
 
 `install` 支援 `[source/]name[@constraint]` 語法(比照 npm):
@@ -96,6 +105,8 @@ Warning: installing a source package from a third-party source, not vetted by th
 在 repo 根目錄操作套件索引,套件原始碼放在 `packages/<name>/`,索引檔是根目錄的 `RepoInfo.json`。
 
 `dpm-server` 目前沒有 prebuilt release,需自行從原始碼建置(`cargo install --path crates/dpm-server`,細節見 [`docs/CONTRIBUTE.MD`](./docs/CONTRIBUTE.MD)),裝好後一樣直接執行 `dpm-server <子指令>`。
+
+四個路徑(`project_src`/`repo_dir`/`keys_dir`/`repo_info`,預設 `packages`/`Repo`/`keys`/`RepoInfo.json`)可透過 `config.toml` 或 `DPM_SERVER__<FIELD>` 環境變數覆寫(例:`DPM_SERVER__REPO_DIR=/srv/dpm-repo`),同一套系統/使用者/環境變數三層規則。`dpm-server gen-config [--force]` 產生使用者層預設設定檔。
 
 | 子指令                                                    | 說明                                                                                                                                    | 範例                                                                 |
 | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |

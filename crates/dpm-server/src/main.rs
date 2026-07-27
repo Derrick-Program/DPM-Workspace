@@ -3,10 +3,10 @@ mod cli_parse;
 mod config;
 mod error;
 pub use action::*;
-pub use config::*;
 use anyhow::Result;
 use clap::Parser;
 pub use cli_parse::*;
+pub use config::*;
 use dpm_core::*;
 pub use error::*;
 
