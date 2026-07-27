@@ -14,8 +14,10 @@ mod config_tests {
             }],
         };
 
-        let toml = toml::to_string(&setting).unwrap();
-        let parsed: Setting = toml::from_str(&toml).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        dpm_core::TomlStorage::to_toml(&setting, &path).unwrap();
+        let parsed: Setting = dpm_core::TomlStorage::from_toml(&path).unwrap();
 
         assert_eq!(parsed.sources.len(), 1);
         assert_eq!(parsed.sources[0].alias, "official");
@@ -23,7 +25,10 @@ mod config_tests {
 
     #[test]
     fn setting_defaults_to_empty_sources_when_missing() {
-        let parsed: Setting = toml::from_str("").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.toml");
+        std::fs::write(&path, "").unwrap();
+        let parsed: Setting = dpm_core::TomlStorage::from_toml(&path).unwrap();
         assert!(parsed.sources.is_empty());
     }
 

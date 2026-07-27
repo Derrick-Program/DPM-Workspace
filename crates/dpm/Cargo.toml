@@ -33,6 +33,3 @@ tempfile = "3.10.1"
 thiserror.workspace = true
 tokio.workspace = true
 turso = "0.6.1"
-
-[dev-dependencies]
-toml = "1"
