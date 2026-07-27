@@ -85,6 +85,7 @@ mod tests {
                 );
                 let _ = stream.write_all(response.as_bytes());
                 let _ = stream.write_all(&body);
+                let _ = stream.flush();
             }
         });
         format!("http://127.0.0.1:{port}/pkg.zip")

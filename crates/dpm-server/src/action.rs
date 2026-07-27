@@ -1696,10 +1696,16 @@ mod tests {
             author: Some("alice".to_string()),
             signature: Some("sig".to_string()),
         };
-        repo.add_package_version("dup-target-pkg".to_string(), make_info(Some("aarch64-apple-darwin")))
-            .unwrap();
+        repo.add_package_version(
+            "dup-target-pkg".to_string(),
+            make_info(Some("aarch64-apple-darwin")),
+        )
+        .unwrap();
         let err = repo
-            .add_package_version("dup-target-pkg".to_string(), make_info(Some("aarch64-apple-darwin")))
+            .add_package_version(
+                "dup-target-pkg".to_string(),
+                make_info(Some("aarch64-apple-darwin")),
+            )
             .unwrap_err();
         assert!(err.to_string().contains("aarch64-apple-darwin"));
     }

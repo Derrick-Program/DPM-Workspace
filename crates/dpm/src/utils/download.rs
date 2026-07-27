@@ -30,6 +30,9 @@ pub async fn download_file(url: &str, dest_path: &Path) -> ClientResult<()> {
             .await
             .map_err(|e| ClientError::SystemError(format!("Failed to write chunk: {}", e)))?;
     }
+    file.flush()
+        .await
+        .map_err(|e| ClientError::SystemError(format!("Failed to flush file: {}", e)))?;
     println!("File downloaded to: {}", dest_path.display());
     Ok(())
 }

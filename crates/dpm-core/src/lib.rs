@@ -723,7 +723,10 @@ mod package_kind_target_tests {
     fn to_db_fields_picks_the_exact_matching_target() {
         let kind = PackageKind::Prebuilt {
             builds: vec![
-                build(Some("x86_64-unknown-linux-gnu"), "https://example.com/linux.zip"),
+                build(
+                    Some("x86_64-unknown-linux-gnu"),
+                    "https://example.com/linux.zip",
+                ),
                 build(Some("aarch64-apple-darwin"), "https://example.com/mac.zip"),
             ],
         };
@@ -736,7 +739,10 @@ mod package_kind_target_tests {
     fn to_db_fields_falls_back_to_the_universal_build_when_no_exact_match() {
         let kind = PackageKind::Prebuilt {
             builds: vec![
-                build(Some("x86_64-unknown-linux-gnu"), "https://example.com/linux.zip"),
+                build(
+                    Some("x86_64-unknown-linux-gnu"),
+                    "https://example.com/linux.zip",
+                ),
                 build(None, "https://example.com/universal.zip"),
             ],
         };
