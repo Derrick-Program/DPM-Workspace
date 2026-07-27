@@ -27,11 +27,13 @@ pub async fn fetch_and_verify_prebuilt(
     download_file(url, download_path).await?;
 
     let package_info_str = read_file_from_zip(download_path, "packageInfo.json")
-        .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
-    let package_info: PackageInfo = JsonStorage::from_str_to(&package_info_str)?;
+        .map_err(|e| ClientError::Core(CoreError::InvalidPackage(format!("{pkg} missing packageInfo.json in zip: {e}"))))?;
+    let package_info: PackageInfo = JsonStorage::from_str_to(&package_info_str)
+        .map_err(|e| ClientError::Core(CoreError::InvalidPackage(format!("{pkg} has invalid packageInfo.json: {e}"))))?;
     let hashes_str = read_file_from_zip(download_path, "hashes.json")
-        .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
-    let package_hash_info: Hashes = JsonStorage::from_str_to(&hashes_str)?;
+        .map_err(|e| ClientError::Core(CoreError::InvalidPackage(format!("{pkg} missing hashes.json in zip: {e}"))))?;
+    let package_hash_info: Hashes = JsonStorage::from_str_to(&hashes_str)
+        .map_err(|e| ClientError::Core(CoreError::InvalidPackage(format!("{pkg} has invalid hashes.json: {e}"))))?;
 
     let hash = dpm_core::hash_file(download_path)?;
     let expected_hash = repo_package_info.hash.clone().ok_or_else(|| {
@@ -184,13 +186,61 @@ mod tests {
         // tampered-in-transit or wrong-index-entry archive.
         let repo_package_info = fixture_db_row(url, "0".repeat(64));
         let download_path = dir.path().join("downloaded.zip");
-
         let err = fetch_and_verify_prebuilt("fixture", &repo_package_info, &download_path)
             .await
             .unwrap_err();
         assert!(matches!(
             err,
             ClientError::Core(CoreError::HashMismatch { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejects_an_archive_missing_package_info() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("main"), b"echo hi").unwrap();
+        let zip_path = dir.path().join("pkg.zip");
+        crate::zip_folder(&src, &zip_path).unwrap();
+        let zip_hash = dpm_core::hash_file(&zip_path).unwrap();
+        let bytes = std::fs::read(&zip_path).unwrap();
+
+        let url = serve_once(bytes);
+        let repo_package_info = fixture_db_row(url, zip_hash);
+        let download_path = dir.path().join("downloaded.zip");
+
+        let err = fetch_and_verify_prebuilt("fixture", &repo_package_info, &download_path)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ClientError::Core(CoreError::InvalidPackage(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejects_an_archive_with_corrupt_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("packageInfo.json"), b"not valid json").unwrap();
+        std::fs::write(src.join("hashes.json"), b"{}").unwrap();
+        let zip_path = dir.path().join("pkg.zip");
+        crate::zip_folder(&src, &zip_path).unwrap();
+        let zip_hash = dpm_core::hash_file(&zip_path).unwrap();
+        let bytes = std::fs::read(&zip_path).unwrap();
+
+        let url = serve_once(bytes);
+        let repo_package_info = fixture_db_row(url, zip_hash);
+        let download_path = dir.path().join("downloaded.zip");
+
+        let err = fetch_and_verify_prebuilt("fixture", &repo_package_info, &download_path)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ClientError::Core(CoreError::InvalidPackage(_))
         ));
     }
 }

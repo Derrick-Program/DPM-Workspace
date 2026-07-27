@@ -253,6 +253,38 @@ impl Db {
         Ok(())
     }
 
+    pub fn validate_table_name(tname: &str) -> ClientResult<()> {
+        let is_valid = matches!(tname, "LocalRepo" | "schema_migrations")
+            || (!tname.is_empty()
+                && tname.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && !tname.starts_with(|c: char| c.is_ascii_digit()));
+        if !is_valid {
+            return Err(ClientError::Core(DatabaseError(format!(
+                "Invalid or unauthorized table name: {tname}"
+            ))));
+        }
+        Ok(())
+    }
+
+    pub async fn execute_query(&self, query: &str) -> ClientResult<()> {
+        let conn = self.connect().await?;
+        conn.execute(query, ())
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        Ok(())
+    }
+
+    pub async fn drop_table(&self, tname: &str) -> ClientResult<()> {
+        Self::validate_table_name(tname)?;
+        self.execute_query(&format!("DROP TABLE IF EXISTS {}", tname))
+            .await
+    }
+
+    pub async fn clear_table(&self, tname: &str) -> ClientResult<()> {
+        Self::validate_table_name(tname)?;
+        self.execute_query(&format!("DELETE FROM {}", tname)).await
+    }
+
     pub async fn clear_table_for_source(&self, source: &str) -> ClientResult<()> {
         let conn = self.connect().await?;
         conn.execute("DELETE FROM LocalRepo WHERE source = ?1", [source])

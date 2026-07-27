@@ -179,4 +179,33 @@ mod db_tests {
             .is_some());
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_table_name_validation() -> TestResult {
+        assert!(Db::validate_table_name("LocalRepo").is_ok());
+        assert!(Db::validate_table_name("schema_migrations").is_ok());
+        assert!(Db::validate_table_name("custom_table_1").is_ok());
+
+        assert!(Db::validate_table_name("LocalRepo; DROP TABLE LocalRepo;--").is_err());
+        assert!(Db::validate_table_name("invalid-table-name").is_err());
+        assert!(Db::validate_table_name("123invalid").is_err());
+        assert!(Db::validate_table_name("").is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_clear_and_drop_table() -> TestResult {
+        let dir = tempdir()?;
+        let db = setup_db(dir.path()).await?;
+        db.insert(sample_pkg("official", "0.1.0")).await?;
+
+        db.clear_table("LocalRepo").await?;
+        assert!(db.read_all().await?.is_empty());
+
+        assert!(db.clear_table("LocalRepo; DROP TABLE LocalRepo;--").await.is_err());
+        assert!(db.drop_table("invalid table").await.is_err());
+
+        db.drop_table("LocalRepo").await?;
+        Ok(())
+    }
 }

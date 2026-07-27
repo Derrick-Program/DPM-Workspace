@@ -8,17 +8,9 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 
 ## P1 — 正確性 / 穩健性
 
-- [ ] **`install()` 對下載下來的套件內容全部 `.unwrap()`,惡意或損毀的 zip 會直接 panic**
-      `crates/dpm/src/action.rs:72,74,77,80,94,97`
-      `read_file_from_zip(...).unwrap()`、`JsonStorage::from_str_to(...).unwrap()`、`package_hash_info.get("hashes.json").unwrap()` 這幾處都假設下載回來的 `packageInfo.json`/`hashes.json` 一定存在且格式正確。Server 端資料有誤、網路傳輸損毀、或惡意 repo 都會讓 client 直接 crash 而不是印出錯誤訊息。應該把這些改成回傳 `ClientResult` 錯誤(`CoreError::InvalidPackage` 之類),讓 `install()` 能優雅失敗。
-
-- [ ] **`system.rs::init()` 的 `repo_url`/`repo_info` 沒寫回 `config.json`**
-      `crates/dpm/src/utils/system.rs:111-129`
-      `config.json` 建立時內容永遠是 `{}`,`repo_url`/`repo_info` 只存在記憶體的 HashMap,重開程式後這兩個值就消失,下次 `init()` 判斷 `config_path.exists()` 為 true 就不會再補值,導致往後讀到的 `config` 缺這兩個 key。缺 `JsonStorage::to_json(&config, &config_path)` 這一步。
-
-- [ ] **`PackageManager::Unknown` 與 unsupported OS 全部用 `panic!`**
-      `crates/dpm/src/utils/system.rs`(`install_package`/`update_package_index`/`uninstall_package`/`search_package`/`upgrade_package`/`list_packages`/`system_command_runner` 共 7 處)
-      使用者機器上沒偵測到任何已知套件管理器,或非 Linux/macOS,整個程式直接 panic 中止,而不是印出可讀的錯誤。應該讓 `detect_package_manager()`/呼叫端回傳 `ClientResult<()>` 的錯誤分支。
+- [x] **`install()` 對下載下來的套件內容全部 `.unwrap()`,惡意或損毀的 zip 會直接 panic** — 於 `crates/dpm/src/utils/fetcher.rs` 將 `read_file_from_zip` 與 `JsonStorage::from_str_to` 的錯誤統一映射為 `ClientError::Core(CoreError::InvalidPackage(...))`,避免壞 zip 導致 panic。
+- [x] **`system.rs::init()` 的 `repo_url`/`repo_info` 沒寫回 `config.json`** — 在 TOML layered config 重構中,`init_first_run` 已透過 `TomlStorage::to_toml(&default_setting, &config_path)` 將包含 `repo_url` 與 `repo_info` 的預設設定寫入 `config.toml`,並新增單元測試驗證持久化與 re-read 正常。
+- [x] **`PackageManager::Unknown` 與 unsupported OS 全部用 `panic!`** — `PackageManager::command_for` 與 `system_command_runner` 全數採用回傳 `ClientResult<()>` 錯誤變體 (`ClientError::SystemError`),移除任何潛在 `panic!`,並移除路徑處的 `.unwrap()`。
 
 ## P2 — 安全 / 硬化
 

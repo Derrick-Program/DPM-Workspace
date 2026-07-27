@@ -205,10 +205,13 @@ impl SystemController {
             .ok_or_else(|| {
                 ClientError::SystemError("Could not get current username".to_string())
             })?;
+        let main_dir_str = main_dir
+            .to_str()
+            .ok_or_else(|| ClientError::SystemError("Invalid UTF-8 in main_dir path".to_string()))?;
         if cfg!(target_os = "linux") {
             self.system_command_runner(
                 "chown",
-                vec!["-R", "root:root", main_dir.to_str().unwrap()],
+                vec!["-R", "root:root", main_dir_str],
                 "Can't run chown",
             )?;
         } else if cfg!(target_os = "macos") {
@@ -217,7 +220,7 @@ impl SystemController {
                 vec![
                     "-R",
                     format!("{}:admin", username).as_str(),
-                    main_dir.to_str().unwrap(),
+                    main_dir_str,
                 ],
                 "Can't run chown",
             )?;
@@ -279,9 +282,13 @@ impl SystemController {
     /// ownership. Shared by `init_first_run`/`init_existing` — bootstrap
     /// happens either way, only what's done with `config.toml` differs.
     fn bootstrap_dirs(&self, ctx: &Context) -> ClientResult<()> {
+        let install_dir_str = ctx
+            .install_dir
+            .to_str()
+            .ok_or_else(|| ClientError::SystemError("Invalid UTF-8 in install_dir path".to_string()))?;
         self.system_command_runner(
             "mkdir",
-            vec!["-p", ctx.install_dir.to_str().unwrap()],
+            vec!["-p", install_dir_str],
             "Can't create Software dir",
         )?;
         // config_dir is the layered config system's user tier — the OS-standard
@@ -298,9 +305,13 @@ impl SystemController {
         std::fs::create_dir_all(&ctx.config_dir)
             .map_err(|e| ClientError::SystemError(format!("Can't create config dir: {e}")))?;
         Self::chown_config_dir_to_invoking_user(ctx)?;
+        let bin_dir_str = ctx
+            .bin_dir
+            .to_str()
+            .ok_or_else(|| ClientError::SystemError("Invalid UTF-8 in bin_dir path".to_string()))?;
         self.system_command_runner(
             "mkdir",
-            vec!["-p", ctx.bin_dir.to_str().unwrap()],
+            vec!["-p", bin_dir_str],
             "Can't create bin dir",
         )?;
         self.permision_check(&ctx.main_dir)
@@ -554,5 +565,42 @@ mod tests {
             official_key_url("https://github.com/Derrick-Program/DPM-Server", "alice"),
             "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/keys/alice.pub"
         );
+    }
+
+    #[tokio::test]
+    async fn init_first_run_persists_repo_url_and_repo_info_to_config() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+        let controller = SystemController::new(ctx.scope);
+
+        let setting = controller.init_first_run(&ctx).await.unwrap();
+        assert_eq!(setting.sources.len(), 1);
+        assert_eq!(setting.sources[0].repo_url, OFFICIAL_REPO_URL);
+        assert_eq!(
+            setting.sources[0].repo_info,
+            official_repo_info_url(OFFICIAL_REPO_URL)
+        );
+
+        let reloaded = controller.init_existing(&ctx).await.unwrap();
+        assert_eq!(reloaded.sources.len(), 1);
+        assert_eq!(reloaded.sources[0].repo_url, OFFICIAL_REPO_URL);
+        assert_eq!(
+            reloaded.sources[0].repo_info,
+            official_repo_info_url(OFFICIAL_REPO_URL)
+        );
+    }
+
+    #[test]
+    fn system_action_unknown_manager_methods_return_error() {
+        let action = SystemAction {
+            package_manager: PackageManager::Unknown,
+            verbose: false,
+        };
+        assert!(action.install_package("foo").is_err());
+        assert!(action.update_package_index().is_err());
+        assert!(action.uninstall_package("foo").is_err());
+        assert!(action.search_package("foo").is_err());
+        assert!(action.upgrade_package("foo").is_err());
+        assert!(action.list_packages().is_err());
     }
 }
