@@ -37,6 +37,9 @@ pub enum CoreError {
 
     #[error("Ambiguous package '{0}': exists in multiple sources, specify source/name")]
     AmbiguousPackage(String),
+
+    #[error("Config error: {0}")]
+    ConfigError(String),
 }
 #[allow(dead_code)]
 pub type CoreResult<T> = Result<T, CoreError>;

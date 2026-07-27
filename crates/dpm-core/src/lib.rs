@@ -1,5 +1,7 @@
+mod config_layer;
 mod error;
 mod zip_file;
+pub use config_layer::*;
 pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use ed25519_dalek::{Signer, Verifier};
 pub use error::*;
@@ -267,6 +269,31 @@ where
     }
 }
 
+/// 跟 `JsonStorage` 同一個「整包讀出、整包寫回」的模式,只是格式換成
+/// TOML——分層設定系統裡,唯一會被程式「寫入」的一層(使用者層那個實體
+/// 檔案)透過這個型別讀寫;系統層/環境變數是唯讀的,不會經過這裡,合併讀取
+/// 走 [`load_layered`]。
+pub struct TomlStorage<T> {
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T> TomlStorage<T>
+where
+    T: Serialize + for<'de> Deserialize<'de>,
+{
+    pub fn from_toml(path: &Path) -> CoreResult<T> {
+        let contents = std::fs::read_to_string(path)?;
+        toml::from_str(&contents).map_err(|e| CoreError::ConfigError(e.to_string()))
+    }
+
+    pub fn to_toml(data: &T, path: &Path) -> CoreResult<()> {
+        let contents =
+            toml::to_string_pretty(data).map_err(|e| CoreError::ConfigError(e.to_string()))?;
+        std::fs::write(path, contents)?;
+        Ok(())
+    }
+}
+
 /// 套件在某個來源索引裡的一個具體版本條目。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -478,6 +505,44 @@ impl Dependency {
             name: name.to_owned(),
             version: version.to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod toml_storage_tests {
+    use super::*;
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+    struct Demo {
+        name: String,
+        count: i64,
+    }
+
+    #[test]
+    fn to_toml_then_from_toml_round_trips_the_same_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("demo.toml");
+        let original = Demo {
+            name: "hello".to_string(),
+            count: 3,
+        };
+
+        TomlStorage::to_toml(&original, &path).unwrap();
+        assert!(path.exists());
+
+        let reloaded: Demo = TomlStorage::from_toml(&path).unwrap();
+        assert_eq!(reloaded, original);
+    }
+
+    #[test]
+    fn from_toml_on_missing_file_is_an_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist.toml");
+        let err = TomlStorage::<Demo>::from_toml(&missing).unwrap_err();
+        assert!(
+            matches!(err, CoreError::IoError(_)),
+            "missing file must surface as CoreError::IoError, got: {err:?}"
+        );
     }
 }
 

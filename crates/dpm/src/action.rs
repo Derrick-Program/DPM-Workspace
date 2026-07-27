@@ -6,7 +6,7 @@ use crate::{
 };
 use colored::Colorize;
 use dpm_core::CoreError;
-use dpm_core::{Dependency, JsonStorage, PackageKind, RepoInfo, VerifyingKey};
+use dpm_core::{Dependency, PackageKind, RepoInfo, VerifyingKey};
 use std::collections::HashMap;
 use std::fs::{remove_dir_all, remove_file};
 use std::path::Path;
@@ -484,7 +484,7 @@ impl ActionInfo {
 
     pub async fn source(&self, action: SourceAction) -> ClientResult<()> {
         let config_path = self.ctx.config_path();
-        let mut setting: Setting = JsonStorage::from_json(&config_path)?;
+        let mut setting: Setting = dpm_core::TomlStorage::from_toml(&config_path)?;
 
         match action {
             SourceAction::Add { url, alias } => {
@@ -516,7 +516,7 @@ impl ActionInfo {
                     repo_url: url.clone(),
                     repo_info: url,
                 });
-                JsonStorage::to_json(&setting, &config_path)?;
+                dpm_core::TomlStorage::to_toml(&setting, &config_path)?;
                 println!(
                     "{}",
                     "Source added. Run `dpm update` to fetch its index.".green()
@@ -531,11 +531,15 @@ impl ActionInfo {
                     )));
                 }
                 self.ctx.db.clear_table_for_source(&alias).await?;
-                JsonStorage::to_json(&setting, &config_path)?;
+                dpm_core::TomlStorage::to_toml(&setting, &config_path)?;
                 println!("{}", "Source removed.".green());
             }
             SourceAction::List => {
-                for source in &setting.sources {
+                // The merged (system < user < env) view, not the user-tier-only
+                // `setting` that Add/Remove mutate — `list` should show what's
+                // actually in effect, including system-tier sources this user
+                // can't (and shouldn't) edit.
+                for source in &self.setting_config.sources {
                     println!("{}  {}", source.alias.green(), source.repo_info);
                 }
             }

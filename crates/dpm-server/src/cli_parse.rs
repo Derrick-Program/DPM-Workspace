@@ -13,6 +13,9 @@ pub enum Commands {
     Keygen(Keygen),
     /// Sign a package's packageInfo.json hash with its author's private key
     Sign(Sign),
+    /// Generate a default config.toml at the user config layer
+    #[command(visible_alias = "gc")]
+    GenConfig(GenConfig),
 }
 
 #[derive(Args, Debug)]
@@ -125,4 +128,44 @@ pub struct Keygen {
 pub struct Sign {
     /// Project Name
     pub name: String,
+}
+
+#[derive(Args, Debug)]
+pub struct GenConfig {
+    /// Overwrite an existing user-tier config.toml
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// The real top-level `Cli` lives in `main.rs` (a binary crate root), so
+    /// it isn't reachable from here. This wrapper exercises exactly the same
+    /// `Commands` subcommand parsing without needing it.
+    #[derive(Parser, Debug)]
+    struct TestCli {
+        #[command(subcommand)]
+        command: Commands,
+    }
+
+    #[test]
+    fn gen_config_parses_force_flag() {
+        let cli = TestCli::try_parse_from(["dpm-server", "gen-config", "--force"]).unwrap();
+        match cli.command {
+            Commands::GenConfig(obj) => assert!(obj.force),
+            other => panic!("expected Commands::GenConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gen_config_gc_alias_parses() {
+        let cli = TestCli::try_parse_from(["dpm-server", "gc"]).unwrap();
+        match cli.command {
+            Commands::GenConfig(obj) => assert!(!obj.force),
+            other => panic!("expected Commands::GenConfig, got {other:?}"),
+        }
+    }
 }
