@@ -213,7 +213,11 @@ pub fn init(obj: &Init, project_src: &Path, keys_dir: &Path) -> ServerResult<()>
             project_path.display()
         )));
     }
-    File::create(project_path.join(obj.entry.as_str()))?;
+    let entry_path = project_path.join(obj.entry.as_str());
+    if let Some(parent) = entry_path.parent() {
+        create_dir_all(parent)?;
+    }
+    File::create(&entry_path)?;
     let file_path = project_path.join("hashes.json");
     File::create(&file_path)?;
     let hash = dpm_core::hash_file(&file_path)?;
