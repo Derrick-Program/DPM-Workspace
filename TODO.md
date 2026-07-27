@@ -14,17 +14,9 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 
 ## P2 — 安全 / 硬化
 
-- [ ] **`Db::execute_query`/`drop_table`/`clear_table` 用 `format!` 組 SQL,table 名稱直接字串插入**
-      `crates/dpm/src/utils/db.rs:55-62,307-314`
-      目前呼叫端都是寫死 `"LocalRepo"`,還不算真的可被利用,但這組 API 本身沒有任何 whitelist/escape,只要之後有任何一處把使用者輸入(例如 CLI 參數)當 table 名稱傳進來,就是 SQL injection。建議至少加一個允許的 table 名稱白名單檢查,或者乾脆把 `tname` 參數改成一個只有兩個變體的 enum。
-
-- [ ] **`diesel.toml` 的 `migrations_directory` 是分割前留下的絕對路徑,已不存在**
-      `crates/dpm/diesel.toml:9`(指向 `/Users/derrick/Documents/Program/rust/Project/DPM/migrations`)
-      執行 `diesel migration generate/run/redo`(`just migration-new`/`migration-run`/`migration-redo`)時 diesel CLI 到底讀寫哪裡不明確,跟 `crates/dpm/migrations/` 內嵌到二進位檔用的 `embed_migrations!` 路徑不是同一份,兩者可能不同步。改成相對路徑 `dir = "migrations"`。
-
-- [ ] **`diesel.toml` 的 `[print_schema] file` 也是相對路徑錯誤,每次 `diesel migration run` 都會在錯的位置生出一份 `crates/dpm/src/schema.rs`**
-      `crates/dpm/diesel.toml:6`
-      真正被程式用的 schema 在 `crates/dpm/src/utils/schema.rs`(`utils/mod.rs` 用 `pub mod schema;` + `pub use self::schema::*` 匯出),但 `print_schema.file = "src/schema.rs"` 每次都會在 crate 根目錄多生一份沒被任何 `mod` 引用的死檔案,污染 working tree(2026-07-24 導入 Infisical 時任務驗證中發現,已手動清過,但問題本身還在)。改成 `dir = "src/utils/schema.rs"` 或乾脆拿掉自動 print_schema,改手動維護。
+- [x] **`Db::execute_query`/`drop_table`/`clear_table` 用 `format!` 組 SQL,table 名稱直接字串插入** — 在 `crates/dpm/src/utils/db.rs` 新增 `validate_table_name` 嚴格白名單檢查（僅允許 `"LocalRepo"`、`"schema_migrations"` 或合法識別碼）,在 `drop_table`/`clear_table` 執行前驗證 table 名稱,並補上單元測試。
+- [x] **`diesel.toml` 的 `migrations_directory` 是分割前留下的絕對路徑,已不存在** — 重新建立 `crates/dpm/diesel.toml` 並將 `migrations_directory` 設定為相對路徑 `"migrations"`。
+- [x] **`diesel.toml` 的 `[print_schema] file` 也是相對路徑錯誤** — 在 `crates/dpm/diesel.toml` 中將 `[print_schema] file` 修正為 `"src/utils/schema.rs"`。
 
 - [ ] **權限模型不一致:Linux `chown -R root:root`,macOS `chown user:admin`**
       `crates/dpm/src/utils/system.rs:54-70`
