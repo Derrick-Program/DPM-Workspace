@@ -96,6 +96,13 @@ pub enum Commands {
         #[command(subcommand)]
         action: SourceAction,
     },
+    /// Generate a default config.toml at the user config layer
+    #[command(visible_alias = "gc")]
+    GenConfig {
+        /// Overwrite an existing user-tier config.toml
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

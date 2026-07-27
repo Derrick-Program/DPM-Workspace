@@ -111,4 +111,59 @@ mod config_tests {
         );
         assert!(format!("{system:?}").contains("System"));
     }
+
+    #[tokio::test]
+    async fn gen_config_writes_default_setting_when_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+        let controller = SystemController::new(Scope::PerUser);
+
+        let path = controller.gen_config(&ctx, false).await.unwrap();
+
+        assert!(path.exists());
+        let reloaded: Setting = dpm_core::TomlStorage::from_toml(&path).unwrap();
+        assert!(
+            reloaded.sources.is_empty(),
+            "gen-config writes Setting::default(), not the seeded 'official' source"
+        );
+    }
+
+    #[tokio::test]
+    async fn gen_config_refuses_to_overwrite_without_force() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+        let controller = SystemController::new(Scope::PerUser);
+
+        controller.gen_config(&ctx, false).await.unwrap();
+        let err = controller.gen_config(&ctx, false).await.unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn gen_config_overwrites_when_force_is_true() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+        let controller = SystemController::new(Scope::PerUser);
+
+        let path = controller.gen_config(&ctx, false).await.unwrap();
+        dpm_core::TomlStorage::to_toml(
+            &Setting {
+                sources: vec![Source {
+                    alias: "hand-edited".to_string(),
+                    repo_url: "https://example.com".to_string(),
+                    repo_info: "https://example.com/RepoInfo.json".to_string(),
+                }],
+            },
+            &path,
+        )
+        .unwrap();
+
+        controller.gen_config(&ctx, true).await.unwrap();
+
+        let reloaded: Setting = dpm_core::TomlStorage::from_toml(&path).unwrap();
+        assert!(
+            reloaded.sources.is_empty(),
+            "--force must overwrite the hand-edited content back to defaults"
+        );
+    }
 }
