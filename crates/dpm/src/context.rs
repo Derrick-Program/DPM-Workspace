@@ -39,17 +39,20 @@ struct Paths {
 }
 
 fn compute_paths(scope: Scope) -> ClientResult<Paths> {
+    let proj_dirs = ProjectDirs::from("com", "duacodie", "dpm")
+        .ok_or_else(|| ClientError::SystemError("no valid home directory found".to_string()))?;
+    // 分層設定系統的「使用者層」一律是這個 OS 標準的個人 config 目錄,
+    // 跟目前是哪個 scope 在裝套件完全無關(兩套獨立概念)——見
+    // docs/superpowers/specs/2026-07-27-layered-toml-config-design.md。
+    let config_dir = proj_dirs.config_dir().to_path_buf();
     match scope {
         Scope::PerUser => {
-            let proj_dirs = ProjectDirs::from("com", "duacodie", "dpm").ok_or_else(|| {
-                ClientError::SystemError("no valid home directory found".to_string())
-            })?;
             let data_dir = proj_dirs.data_dir().to_path_buf();
             Ok(Paths {
                 main_dir: data_dir.clone(),
                 bin_dir: data_dir.join("bin"),
                 install_dir: data_dir.join("Software"),
-                config_dir: proj_dirs.config_dir().to_path_buf(),
+                config_dir,
             })
         }
         Scope::System => {
@@ -58,7 +61,7 @@ fn compute_paths(scope: Scope) -> ClientResult<Paths> {
                 main_dir: root.clone(),
                 bin_dir: root.join("bin"),
                 install_dir: root.join("Software"),
-                config_dir: root.join("Settings"),
+                config_dir,
             })
         }
     }
@@ -75,11 +78,20 @@ async fn open_db(main_dir: &std::path::Path) -> ClientResult<Db> {
 }
 
 impl Context {
-    /// The one place `"config.json"` is spelled out — `system.rs`,
-    /// `action.rs`, and `lib.rs` all used to join it onto `config_dir`
-    /// independently.
+    /// 分層設定系統的使用者層路徑——`dpm` 唯一會寫入的那一層。
     pub fn config_path(&self) -> PathBuf {
-        self.config_dir.join("config.json")
+        self.config_dir.join("config.toml")
+    }
+
+    /// 分層設定系統的系統層路徑(machine-wide)——`dpm` 自己永遠不會寫入
+    /// 這個路徑,只有系統管理員手動編輯。不吃 `&self`,因為這是跟目前
+    /// scope/instance 無關的固定常數。
+    pub fn system_config_path() -> PathBuf {
+        if cfg!(target_os = "macos") {
+            PathBuf::from("/Library/Application Support/com.duacodie.dpm/config.toml")
+        } else {
+            PathBuf::from("/etc/dpm/config.toml")
+        }
     }
 
     /// Production constructor. Resolves `scope`'s real paths, creates
@@ -155,8 +167,8 @@ mod tests {
             PathBuf::from("/opt/com.duacodie/DPM/Software")
         );
         assert_eq!(
-            system.config_dir,
-            PathBuf::from("/opt/com.duacodie/DPM/Settings")
+            per_user.config_dir, system.config_dir,
+            "分層設定系統的使用者層路徑,必須跟 --system/per-user 安裝 scope 脫鉤——兩種 scope 讀到的是同一份設定"
         );
     }
 

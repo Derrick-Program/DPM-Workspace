@@ -1,11 +1,10 @@
 use super::ClientError;
 use super::ClientResult;
 use crate::{Context, Scope, Setting, Source};
-use dpm_core::JsonStorage;
 use libc::{getpwuid, getuid};
 use std::{
     ffi::CStr,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 /// 「官方」套件來源的預設 git repo 位址——見上方模組文件註解。這次改成
@@ -298,18 +297,42 @@ impl SystemController {
                 repo_info: official_repo_info_url(OFFICIAL_REPO_URL),
             }],
         };
-        JsonStorage::to_json(&default_setting, &config_path)?;
+        dpm_core::TomlStorage::to_toml(&default_setting, &config_path)?;
         self.permision_check(&ctx.main_dir)?;
-        Ok(JsonStorage::from_json(&config_path)?)
+        Ok(dpm_core::load_layered(
+            &Context::system_config_path(),
+            &config_path,
+            "DPM",
+        )?)
     }
 
-    /// OS bootstrap for every run after the first: `config.json` already
-    /// exists, so this only (re-)creates the scope's directories and reads
-    /// the existing config back.
+    /// OS bootstrap for every run after the first: the user-tier
+    /// `config.toml` already exists, so this only (re-)creates the scope's
+    /// directories and re-reads the effective (system < user < env) config.
     pub async fn init_existing(&self, ctx: &Context) -> ClientResult<Setting> {
         self.bootstrap_dirs(ctx)?;
         let config_path = ctx.config_path();
-        Ok(JsonStorage::from_json(&config_path)?)
+        Ok(dpm_core::load_layered(
+            &Context::system_config_path(),
+            &config_path,
+            "DPM",
+        )?)
+    }
+
+    /// `gen-config` subcommand:把預設 `Setting` 寫進使用者層。使用者層
+    /// 已存在且沒帶 `force` 就拒絕——那個檔案可能已經被手動改過,不能悄悄
+    /// 蓋掉。永遠不會碰系統層(`Context::system_config_path()`)。
+    pub async fn gen_config(&self, ctx: &Context, force: bool) -> ClientResult<PathBuf> {
+        self.bootstrap_dirs(ctx)?;
+        let config_path = ctx.config_path();
+        if config_path.exists() && !force {
+            return Err(ClientError::ConfigError(format!(
+                "{} already exists — pass --force to overwrite",
+                config_path.display()
+            )));
+        }
+        dpm_core::TomlStorage::to_toml(&Setting::default(), &config_path)?;
+        Ok(config_path)
     }
 }
 
