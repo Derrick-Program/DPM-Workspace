@@ -535,7 +535,11 @@ impl ActionInfo {
                 println!("{}", "Source removed.".green());
             }
             SourceAction::List => {
-                for source in &setting.sources {
+                // The merged (system < user < env) view, not the user-tier-only
+                // `setting` that Add/Remove mutate — `list` should show what's
+                // actually in effect, including system-tier sources this user
+                // can't (and shouldn't) edit.
+                for source in &self.setting_config.sources {
                     println!("{}  {}", source.alias.green(), source.repo_info);
                 }
             }

@@ -67,6 +67,24 @@ mod cli_parse_tests {
     }
 
     #[test]
+    fn gen_config_parses_force_flag() {
+        let cli = Cli::try_parse_from(["dpm", "gen-config", "--force"]).unwrap();
+        match cli.command {
+            Some(Commands::GenConfig { force }) => assert!(force),
+            other => panic!("expected Commands::GenConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gen_config_gc_alias_parses() {
+        let cli = Cli::try_parse_from(["dpm", "gc"]).unwrap();
+        match cli.command {
+            Some(Commands::GenConfig { force }) => assert!(!force),
+            other => panic!("expected Commands::GenConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn source_without_subcommand_is_an_error() {
         let result = Cli::try_parse_from(["dpm", "source"]);
         assert!(result.is_err(), "source requires add/remove/list");

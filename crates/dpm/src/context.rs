@@ -90,6 +90,9 @@ impl Context {
         if cfg!(target_os = "macos") {
             PathBuf::from("/Library/Application Support/com.duacodie.dpm/config.toml")
         } else {
+            // Unix-only crate (libc/sudo deps, `system_command_runner` rejects
+            // anything that isn't Linux or macOS), so this branch means "Linux"
+            // in practice, not literally "every non-macOS OS".
             PathBuf::from("/etc/dpm/config.toml")
         }
     }

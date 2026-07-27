@@ -10,7 +10,7 @@ use std::{
 /// 「官方」套件來源的預設 git repo 位址——見上方模組文件註解。這次改成
 /// `pub(crate)` 是因為簽章驗證(`action.rs` 的 `sync_source`/`install_resolved`)
 /// 要拿它跟 `Source.repo_url` 比對,判斷是否該套用簽章驗證這個安全閘門
-/// (刻意比對這個寫死的常數,不是使用者本機 `config.json` 可以自己編輯的
+/// (刻意比對這個寫死的常數,不是使用者本機 `config.toml` 可以自己編輯的
 /// `alias` 字串)。
 pub(crate) const OFFICIAL_REPO_URL: &str = "https://github.com/Derrick-Program/DPM-Server";
 
@@ -252,20 +252,52 @@ impl SystemController {
         }
         Ok(())
     }
+    /// `chown_dir_to_sudo_user` for the shared per-user `config_dir`, but
+    /// tolerant of "this process is root and `SUDO_UID` isn't set".
+    ///
+    /// The helper itself treats that state as a hard error, and rightly so at
+    /// its original call site (`utils::privilege`'s build-directory prep,
+    /// where the whole point is refusing to let an untrusted build command run
+    /// as root). Here the goal is only to hand the config directory back to
+    /// whoever invoked `sudo`. A genuine root login — a Docker container, a
+    /// root-only server, `--system` where `sudo::escalate_if_needed()` found
+    /// itself already root — has no such user, and root-owned is then the
+    /// correct outcome, not a failure. Without this guard `dpm` would refuse
+    /// to bootstrap at all for those users.
+    ///
+    /// Gating on `SUDO_UID`'s presence (not on `getuid()`) keeps the Linux
+    /// `--system`-via-sudo path — the one this whole fix exists for — going
+    /// through the real chown untouched: `sudo` always sets it.
+    fn chown_config_dir_to_invoking_user(ctx: &Context) -> ClientResult<()> {
+        if std::env::var_os("SUDO_UID").is_none() {
+            return Ok(());
+        }
+        crate::utils::privilege::chown_dir_to_sudo_user(&ctx.config_dir)
+    }
+
     /// Creates the scope's three directories (idempotent) and syncs their
     /// ownership. Shared by `init_first_run`/`init_existing` — bootstrap
-    /// happens either way, only what's done with `config.json` differs.
+    /// happens either way, only what's done with `config.toml` differs.
     fn bootstrap_dirs(&self, ctx: &Context) -> ClientResult<()> {
         self.system_command_runner(
             "mkdir",
             vec!["-p", ctx.install_dir.to_str().unwrap()],
             "Can't create Software dir",
         )?;
-        self.system_command_runner(
-            "mkdir",
-            vec!["-p", ctx.config_dir.to_str().unwrap()],
-            "Can't create Settings dir",
-        )?;
+        // config_dir is the layered config system's user tier — the OS-standard
+        // per-user config directory, scope-independent (see
+        // docs/superpowers/specs/2026-07-27-layered-toml-config-design.md).
+        // It must never go through system_command_runner's --system-mode sudo
+        // prefix (unlike main_dir, this directory is shared with per-user mode
+        // and must stay writable by the actual user, not root). On Linux,
+        // --system already runs this whole process as root (main.rs's
+        // sudo::escalate_if_needed()), so even a plain create_dir_all here
+        // still produces a root-owned directory — chown_dir_to_sudo_user
+        // corrects that back to the invoking user; it's a no-op on macOS and
+        // under per-user scope, where there's never a mismatch to fix.
+        std::fs::create_dir_all(&ctx.config_dir)
+            .map_err(|e| ClientError::SystemError(format!("Can't create config dir: {e}")))?;
+        Self::chown_config_dir_to_invoking_user(ctx)?;
         self.system_command_runner(
             "mkdir",
             vec!["-p", ctx.bin_dir.to_str().unwrap()],
@@ -282,8 +314,8 @@ impl SystemController {
     /// OS-utility seam and the command-orchestration seam).
     ///
     /// Replaces the old `init() -> (Setting, bool)`, whose `bool` told the
-    /// caller whether `config.json` was just created so it could decide
-    /// whether to seed sources. `entry()` now checks `config.json`'s
+    /// caller whether `config.toml` was just created so it could decide
+    /// whether to seed sources. `entry()` now checks `config.toml`'s
     /// existence itself and calls this function only on that branch, so
     /// "was this the first run" and "should I seed sources" collapse into
     /// the same call — there's no bool to let those two facts drift apart.
@@ -298,6 +330,10 @@ impl SystemController {
             }],
         };
         dpm_core::TomlStorage::to_toml(&default_setting, &config_path)?;
+        // The file we just wrote is brand new, created by this process — which
+        // on Linux `--system` is root (see bootstrap_dirs). Re-sweep the whole
+        // config dir so the new file lands on the invoking user too.
+        Self::chown_config_dir_to_invoking_user(ctx)?;
         self.permision_check(&ctx.main_dir)?;
         Ok(dpm_core::load_layered(
             &Context::system_config_path(),
@@ -319,7 +355,8 @@ impl SystemController {
         )?)
     }
 
-    /// `gen-config` subcommand:把預設 `Setting` 寫進使用者層。使用者層
+    /// `gen-config` subcommand:在使用者層建立一個「空的」`config.toml`
+    /// (零個 key,不是序列化後的 `Setting::default()`——理由見函式內註解)。使用者層
     /// 已存在且沒帶 `force` 就拒絕——那個檔案可能已經被手動改過,不能悄悄
     /// 蓋掉。永遠不會碰系統層(`Context::system_config_path()`)。
     pub async fn gen_config(&self, ctx: &Context, force: bool) -> ClientResult<PathBuf> {
@@ -331,7 +368,16 @@ impl SystemController {
                 config_path.display()
             )));
         }
-        dpm_core::TomlStorage::to_toml(&Setting::default(), &config_path)?;
+        // An empty file, not a serialized Setting::default() — a present-but-
+        // empty `sources = []` key still wins over the system tier in
+        // config-crate's key-presence-based merge (whole-key replace, not deep
+        // merge), silently making the system tier unreachable for anyone who
+        // runs gen-config. An empty file contributes no keys, so the system
+        // tier (and, failing that, Setting::default() itself) can still supply
+        // `sources`.
+        std::fs::write(&config_path, "")
+            .map_err(|e| ClientError::SystemError(format!("Can't write config file: {e}")))?;
+        Self::chown_config_dir_to_invoking_user(ctx)?;
         Ok(config_path)
     }
 }

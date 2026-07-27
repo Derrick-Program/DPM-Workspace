@@ -32,6 +32,9 @@ pub fn system_config_path() -> PathBuf {
     if cfg!(target_os = "macos") {
         PathBuf::from("/Library/Application Support/com.duacodie.dpm-server/config.toml")
     } else {
+        // Unix-only crate (libc/sudo deps, `system_command_runner` rejects
+        // anything that isn't Linux or macOS), so this branch means "Linux"
+        // in practice, not literally "every non-macOS OS".
         PathBuf::from("/etc/dpm-server/config.toml")
     }
 }
@@ -57,12 +60,16 @@ pub fn load_or_init(
         if let Some(parent) = user_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        dpm_core::TomlStorage::to_toml(&ServerConfig::default(), user_path)?;
+        // Empty file, not a serialized ServerConfig::default() — see the
+        // equivalent comment in dpm's SystemController::gen_config for why a
+        // fully-populated default file would permanently shadow the system tier.
+        std::fs::write(user_path, "")?;
     }
     dpm_core::load_layered(system_path, user_path, env_prefix)
 }
 
-/// `gen-config` subcommand:把預設 `ServerConfig` 寫進使用者層路徑。
+/// `gen-config` subcommand:在使用者層路徑建立一個「空的」`config.toml`
+/// (零個 key,不是序列化後的 `ServerConfig::default()`——理由見函式內註解)。
 /// 已存在且沒帶 `force` 就拒絕。
 pub fn gen_config(user_path: &Path, force: bool) -> CoreResult<()> {
     if user_path.exists() && !force {
@@ -74,7 +81,11 @@ pub fn gen_config(user_path: &Path, force: bool) -> CoreResult<()> {
     if let Some(parent) = user_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    dpm_core::TomlStorage::to_toml(&ServerConfig::default(), user_path)
+    // Empty file, not a serialized ServerConfig::default() — a present-but-
+    // default key still wins over the system tier in config-crate's
+    // key-presence-based merge, which would make the system tier unreachable.
+    std::fs::write(user_path, "")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -117,6 +128,23 @@ mod tests {
         assert_eq!(
             cfg.project_src, "packages",
             "fields neither layer sets must still fall back to ServerConfig::default()"
+        );
+    }
+
+    #[test]
+    fn system_tier_field_survives_a_fully_populated_user_tier_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let system_path = dir.path().join("system.toml");
+        let user_path = dir.path().join("user.toml");
+        std::fs::write(&system_path, "repo_dir = \"/srv/from-system\"\n").unwrap();
+
+        // Simulates what load_or_init now does on first run: write nothing,
+        // not a fully-populated default struct.
+        let cfg = load_or_init(&system_path, &user_path, "DPM_SERVER_TEST_SURVIVES").unwrap();
+
+        assert_eq!(
+            cfg.repo_dir, "/srv/from-system",
+            "system tier must reach through when the user tier writes no keys at all"
         );
     }
 

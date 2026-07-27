@@ -66,10 +66,12 @@ dpm --system list -l
 
 ### 設定檔(config.toml)
 
-`dpm` 的設定分三層,後者覆寫前者:系統層(`/etc/dpm/config.toml`,Linux;`/Library/Application Support/com.duacodie.dpm/config.toml`,macOS,唯讀,系統管理員維護)< 使用者層(`dpm` 自動產生與寫入)< 環境變數。`dpm source add/remove` 只會改使用者層。
+`dpm` 的設定分三層,後者覆寫前者:系統層(`/etc/dpm/config.toml`,Linux;`/Library/Application Support/com.duacodie.dpm/config.toml`,macOS,唯讀,系統管理員維護)< 使用者層(`~/.config/dpm/config.toml`,Linux;`~/Library/Application Support/com.duacodie.dpm/config.toml`,macOS,`dpm` 自動產生與寫入)< 環境變數。`dpm source add/remove` 只會改使用者層,兩種安裝 scope(預設 / `--system`)讀到的都是同一份使用者層設定。
+
+(「< 環境變數」是三層機制的通則;`dpm` 目前唯一的設定欄位 `sources` 是 array of tables,環境變數層沒有對應的表示法,實務上無法用環境變數覆寫。)
 
 ```bash
-dpm gen-config          # 產生使用者層預設設定檔
+dpm gen-config          # 產生使用者層設定檔(空檔,未覆寫的欄位沿用系統層/預設值)
 dpm gen-config --force  # 已存在時強制覆寫
 ```
 
@@ -106,7 +108,7 @@ Warning: installing a source package from a third-party source, not vetted by th
 
 `dpm-server` 目前沒有 prebuilt release,需自行從原始碼建置(`cargo install --path crates/dpm-server`,細節見 [`docs/CONTRIBUTE.MD`](./docs/CONTRIBUTE.MD)),裝好後一樣直接執行 `dpm-server <子指令>`。
 
-四個路徑(`project_src`/`repo_dir`/`keys_dir`/`repo_info`,預設 `packages`/`Repo`/`keys`/`RepoInfo.json`)可透過 `config.toml` 或 `DPM_SERVER__<FIELD>` 環境變數覆寫(例:`DPM_SERVER__REPO_DIR=/srv/dpm-repo`),同一套系統/使用者/環境變數三層規則。`dpm-server gen-config [--force]` 產生使用者層預設設定檔。
+四個路徑(`project_src`/`repo_dir`/`keys_dir`/`repo_info`,預設 `packages`/`Repo`/`keys`/`RepoInfo.json`)可透過 `config.toml` 或 `DPM_SERVER__<FIELD>` 環境變數覆寫(例:`DPM_SERVER__REPO_DIR=/srv/dpm-repo`),同一套系統/使用者/環境變數三層規則(系統層 `/etc/dpm-server/config.toml`,Linux;`/Library/Application Support/com.duacodie.dpm-server/config.toml`,macOS。使用者層 `~/.config/dpm-server/config.toml`,Linux;`~/Library/Application Support/com.duacodie.dpm-server/config.toml`,macOS)。`dpm-server gen-config [--force]`(別名 `gc`)產生使用者層設定檔。
 
 | 子指令                                                    | 說明                                                                                                                                    | 範例                                                                 |
 | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
