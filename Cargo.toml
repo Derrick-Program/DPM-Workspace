@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/dpm", "crates/dpm-server", "crates/dpm-core"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.4"
 edition = "2021"
 authors = ["Derrick Lin"]
 license = "MIT OR Apache-2.0"
