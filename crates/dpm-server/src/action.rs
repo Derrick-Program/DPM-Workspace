@@ -324,7 +324,11 @@ fn fix_add(
     verify_publish_authorization(&pk_info, repo, &obj.project_name, keys_dir)?;
 
     let kind = match &obj.kind {
-        AddKind::Url { url, file_name } => {
+        AddKind::Url {
+            url,
+            file_name,
+            target,
+        } => {
             if !url.starts_with("https://") {
                 return Err(ServerError::ValidationError(format!(
                     "url {url} must use https://"
@@ -362,12 +366,15 @@ fn fix_add(
             }
 
             PackageKind::Prebuilt {
-                url: url.clone(),
-                hash: pk_info.hash.clone(),
-                file_name,
+                builds: vec![dpm_core::PrebuiltBuild {
+                    target: target.clone(),
+                    url: url.clone(),
+                    hash: pk_info.hash.clone(),
+                    file_name,
+                }],
             }
         }
-        AddKind::Build { build } => {
+        AddKind::Build { build, targets } => {
             // Same check as the Url arm above, mirrored for source packages:
             // recompute the hash this `--build` value would produce and
             // compare it against the signed hash, so someone with
@@ -385,6 +392,7 @@ fn fix_add(
             PackageKind::Source {
                 build: build.clone(),
                 hash: Some(pk_info.hash.clone()),
+                supported_targets: targets.clone(),
             }
         }
     };
@@ -549,6 +557,7 @@ mod tests {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
                     build: "v1 build".to_string(),
+                    targets: None,
                 },
             },
             &mut repo,
@@ -596,6 +605,7 @@ mod tests {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
                     build: "v2 build".to_string(),
+                    targets: None,
                 },
             },
             &mut repo,
@@ -636,6 +646,7 @@ mod tests {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
                     build: "v1 build".to_string(),
+                    targets: None,
                 },
             },
             &mut repo,
@@ -673,6 +684,7 @@ mod tests {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
                     build: "v2 build".to_string(),
+                    targets: None,
                 },
             },
             &mut repo,
@@ -716,6 +728,7 @@ mod tests {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
                     build: "cargo build".to_string(),
+                    targets: None,
                 },
             },
             &mut repo,
@@ -952,6 +965,7 @@ mod tests {
             project_name: "demo-pkg".to_string(),
             kind: AddKind::Build {
                 build: "cargo build --release".to_string(),
+                targets: None,
             },
         };
         fix_add(&add, &mut repo, &project_src, &keys_dir).unwrap();
@@ -961,7 +975,7 @@ mod tests {
         assert_eq!(version_info.author.as_deref(), Some("alice"));
         assert!(version_info.signature.is_some());
         match &version_info.kind {
-            PackageKind::Source { build, hash } => {
+            PackageKind::Source { build, hash, .. } => {
                 assert_eq!(build, "cargo build --release");
                 assert!(hash.is_some());
             }
@@ -1004,6 +1018,7 @@ mod tests {
                     // Signed hash was computed over "cargo build --release";
                     // this doesn't match it.
                     build: "cargo build --release --features malicious".to_string(),
+                    targets: None,
                 },
             },
             &mut repo,
@@ -1044,6 +1059,7 @@ mod tests {
             kind: AddKind::Url {
                 url: "http://example.com/pkg.zip".to_string(),
                 file_name: None,
+                target: None,
             },
         };
         let err = fix_add(&add, &mut repo, &project_src, &keys_dir).unwrap_err();
@@ -1586,5 +1602,101 @@ mod tests {
         assert!(matches!(err, ServerError::ValidationError(_)));
 
         std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    #[test]
+    fn add_kind_url_with_target_builds_a_prebuilt_kind_with_one_build_entry() {
+        let target = Some("aarch64-apple-darwin".to_string());
+        let kind = PackageKind::Prebuilt {
+            builds: vec![dpm_core::PrebuiltBuild {
+                target: target.clone(),
+                url: "https://example.com/mac.zip".to_string(),
+                hash: "a".repeat(64),
+                file_name: "mac.zip".to_string(),
+            }],
+        };
+        match kind {
+            PackageKind::Prebuilt { builds } => {
+                assert_eq!(builds.len(), 1);
+                assert_eq!(builds[0].target, target);
+            }
+            _ => panic!("expected Prebuilt"),
+        }
+    }
+
+    #[test]
+    fn repo_info_add_package_version_appends_a_new_target_build_to_an_existing_version() {
+        let mut repo = RepoInfo::new();
+        let first = PackageVersionInfo {
+            version: "1.0.0".to_string(),
+            kind: PackageKind::Prebuilt {
+                builds: vec![dpm_core::PrebuiltBuild {
+                    target: Some("x86_64-unknown-linux-gnu".to_string()),
+                    url: "https://example.com/linux.zip".to_string(),
+                    hash: "a".repeat(64),
+                    file_name: "linux.zip".to_string(),
+                }],
+            },
+            dependencies: None,
+            entry: None,
+            description: None,
+            author: Some("alice".to_string()),
+            signature: Some("sig".to_string()),
+        };
+        repo.add_package_version("multi-target-pkg".to_string(), first)
+            .unwrap();
+
+        let second = PackageVersionInfo {
+            version: "1.0.0".to_string(),
+            kind: PackageKind::Prebuilt {
+                builds: vec![dpm_core::PrebuiltBuild {
+                    target: Some("aarch64-apple-darwin".to_string()),
+                    url: "https://example.com/mac.zip".to_string(),
+                    hash: "b".repeat(64),
+                    file_name: "mac.zip".to_string(),
+                }],
+            },
+            dependencies: None,
+            entry: None,
+            description: None,
+            author: Some("alice".to_string()),
+            signature: Some("sig2".to_string()),
+        };
+        repo.add_package_version("multi-target-pkg".to_string(), second)
+            .unwrap();
+
+        let versions = repo.versions_of("multi-target-pkg").unwrap();
+        assert_eq!(versions.len(), 1, "same version, not a second entry");
+        match &versions[0].kind {
+            PackageKind::Prebuilt { builds } => assert_eq!(builds.len(), 2),
+            _ => panic!("expected Prebuilt"),
+        }
+    }
+
+    #[test]
+    fn repo_info_add_package_version_rejects_a_duplicate_target() {
+        let mut repo = RepoInfo::new();
+        let make_info = |target: Option<&str>| PackageVersionInfo {
+            version: "1.0.0".to_string(),
+            kind: PackageKind::Prebuilt {
+                builds: vec![dpm_core::PrebuiltBuild {
+                    target: target.map(|s| s.to_string()),
+                    url: "https://example.com/a.zip".to_string(),
+                    hash: "a".repeat(64),
+                    file_name: "a.zip".to_string(),
+                }],
+            },
+            dependencies: None,
+            entry: None,
+            description: None,
+            author: Some("alice".to_string()),
+            signature: Some("sig".to_string()),
+        };
+        repo.add_package_version("dup-target-pkg".to_string(), make_info(Some("aarch64-apple-darwin")))
+            .unwrap();
+        let err = repo
+            .add_package_version("dup-target-pkg".to_string(), make_info(Some("aarch64-apple-darwin")))
+            .unwrap_err();
+        assert!(err.to_string().contains("aarch64-apple-darwin"));
     }
 }

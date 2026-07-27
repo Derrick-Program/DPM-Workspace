@@ -93,6 +93,13 @@ pub enum AddKind {
         /// the URL's last path segment)
         #[arg(long)]
         file_name: Option<String>,
+        /// Rust target triple this build is for (e.g.
+        /// aarch64-apple-darwin). Omit for a universal build that installs
+        /// on any platform. The same version can have this run multiple
+        /// times with different --target values to register more than one
+        /// platform-specific build.
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Publish a source package clients build locally
     Build {
@@ -100,6 +107,13 @@ pub enum AddKind {
         /// source. $OUT will point at the install destination when clients
         /// actually run it (Phase 4 client-side work).
         build: String,
+        /// Comma-separated list of Rust target triples this package
+        /// supports (e.g. aarch64-apple-darwin,x86_64-unknown-linux-gnu).
+        /// Omit to allow installing on any platform. The build command
+        /// itself does not vary by target — this is only an install-time
+        /// allow-list check.
+        #[arg(long, value_delimiter = ',')]
+        targets: Option<Vec<String>>,
     },
 }
 
