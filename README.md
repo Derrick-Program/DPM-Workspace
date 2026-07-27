@@ -11,7 +11,27 @@ crates/
 
 架構細節、已知問題見 [`CLAUDE.md`](./CLAUDE.md)。
 
-## 前置設定
+## 安裝(終端使用者)
+
+macOS / Linux 一行裝好 `dpm`(從 [GitHub Releases](https://github.com/Derrick-Program/DPM-Workspace/releases) 抓對應平台的已簽章 prebuilt binary,不需要 Rust 工具鏈):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/install.sh | bash
+```
+
+預設裝到 `~/.local/bin/dpm`,可用環境變數覆寫:
+
+```bash
+DPM_VERSION=v0.1.5 DPM_INSTALL_DIR=/usr/local/bin \
+  curl -fsSL https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/install.sh | bash
+```
+
+- `DPM_VERSION`:指定版本(預設抓最新 release)
+- `DPM_INSTALL_DIR`:安裝目錄(預設 `~/.local/bin`)
+
+裝好後之後想更新版本,直接跑 `dpm upgrade-self` 即可——這條路徑會驗證 zipsign 簽章,簽章不符會拒絕安裝。
+
+## 前置設定(開發者)
 
 指令一律透過 `just` 執行,secret 由 [Infisical](https://infisical.com) 在執行期注入,不落地到硬碟。
 
