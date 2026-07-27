@@ -294,19 +294,35 @@ where
     }
 }
 
-/// 套件在某個來源索引裡的一個具體版本條目。
+/// `PackageKind::Prebuilt` 的其中一組 target-specific build——apt/dnf 風格,
+/// 同一個套件版本可以有多組,`target` 用 Rust target triple(`self_update::
+/// get_target()` 那套字串),`None` 代表任何平台通用(對應 apt 的
+/// `Architecture: all`)。
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PrebuiltBuild {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub url: String,
+    pub hash: String,
+    pub file_name: String,
+}
+
+/// 套件在某個來源索引裡的一個具體版本條目。
+#[derive(Debug, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum PackageKind {
-    /// 已預先打包好的二進位/壓縮檔,client 直接下載解壓。
-    Prebuilt {
-        url: String,
-        hash: String,
-        file_name: String,
-    },
+    /// 已預先打包好的二進位/壓縮檔,client 直接下載解壓。一個版本可以登記
+    /// 多組 target-specific build(apt/dnf 風格),`to_db_fields` 依呼叫端
+    /// 傳入的本機 target 挑一組。舊格式(單一 `url`/`hash`/`file_name`,沒有
+    /// `builds` 陣列)透過下面的 `Deserialize` 手動實作相容,視為一組
+    /// `target: None` 的通用 build。
+    Prebuilt { builds: Vec<PrebuiltBuild> },
     /// 只提供原始碼 + build 指令,client 在本機執行 build。`hash` 是
     /// `blake3(build_command + commit hash)`(`dpm-server hash --build`
     /// 算出來的),`Option` 是因為還沒被 `hash`+`sign` 過的草稿狀態下沒有值。
+    /// `supported_targets` 是安裝前的允許清單(`None` = 任何平台)——build
+    /// 指令本身不分平台,只有一組,這個欄位純粹用來擋「這台機器不支援」的
+    /// 情況,不是挑選邏輯。
     ///
     /// 已知、刻意延後處理的缺口(非本次功能涵蓋範圍,不要當成已解決):這個
     /// hash 綁定的是 `build_command` 字串加上發布當下的 commit,但 commit
@@ -322,37 +338,148 @@ pub enum PackageKind {
         build: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        supported_targets: Option<Vec<String>>,
     },
 }
 
+impl<'de> Deserialize<'de> for PackageKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+        use serde_json::Value;
+
+        let mut value = Value::deserialize(deserializer)?;
+        let obj = value
+            .as_object_mut()
+            .ok_or_else(|| D::Error::custom("PackageKind must be a JSON object"))?;
+        let kind = obj
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| D::Error::custom("PackageKind is missing a \"kind\" tag"))?
+            .to_string();
+
+        match kind.as_str() {
+            "prebuilt" => {
+                if !obj.contains_key("builds") {
+                    // 舊格式:單一 url/hash/file_name,沒有 builds 陣列——
+                    // 包成一組 target: None(通用)的 build,相容既有已發布
+                    // 資料,不需要重新發布。
+                    let url = obj
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| D::Error::custom("prebuilt package missing url"))?
+                        .to_string();
+                    let hash = obj
+                        .get("hash")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| D::Error::custom("prebuilt package missing hash"))?
+                        .to_string();
+                    let file_name = obj
+                        .get("file_name")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| D::Error::custom("prebuilt package missing file_name"))?
+                        .to_string();
+                    return Ok(PackageKind::Prebuilt {
+                        builds: vec![PrebuiltBuild {
+                            target: None,
+                            url,
+                            hash,
+                            file_name,
+                        }],
+                    });
+                }
+                #[derive(Deserialize)]
+                struct Shape {
+                    builds: Vec<PrebuiltBuild>,
+                }
+                let shape: Shape =
+                    serde_json::from_value(value.clone()).map_err(D::Error::custom)?;
+                Ok(PackageKind::Prebuilt {
+                    builds: shape.builds,
+                })
+            }
+            "source" => {
+                #[derive(Deserialize)]
+                struct Shape {
+                    build: String,
+                    #[serde(default)]
+                    hash: Option<String>,
+                    #[serde(default)]
+                    supported_targets: Option<Vec<String>>,
+                }
+                let shape: Shape =
+                    serde_json::from_value(value.clone()).map_err(D::Error::custom)?;
+                Ok(PackageKind::Source {
+                    build: shape.build,
+                    hash: shape.hash,
+                    supported_targets: shape.supported_targets,
+                })
+            }
+            other => Err(D::Error::custom(format!("unknown package kind: {other}"))),
+        }
+    }
+}
+
 impl PackageKind {
-    /// 供本地 SQLite `LocalRepo` 表使用的扁平欄位("prebuilt" | "source" +
-    /// 該 variant 專屬欄位)。跟 [`Self::from_db_fields`] 成對——variant 名稱
-    /// 只在這兩個函式裡出現一次,呼叫端不需要自己重複 "prebuilt"/"source"
-    /// 字面值。
+    /// 依呼叫端傳入的本機 target(`self_update::get_target()` 那套字串)
+    /// 挑一組能用的 build,再扁平化成 `LocalRepo` 表的欄位。`Prebuilt`:先找
+    /// 完全匹配的 target,找不到就退回 `target: None` 的通用 build,兩者都
+    /// 沒有就回傳 `Err`(訊息列出這個版本實際登記的所有 target)。`Source`:
+    /// 檢查 `supported_targets`(`None` 或包含這個 target 才算支援),不支援
+    /// 就回傳 `Err`(訊息列出 `supported_targets` 內容)。呼叫端
+    /// (`sync_source_inner`)對 `Err` 的處理是印警告、跳過這個版本、不寫進
+    /// 本機 DB——target 匹配只在 sync 時做一次,本機 DB 存的永遠已經是「這台
+    /// 機器裝得下」的單一 build,`LocalRepo` 表結構不用為多 target 改動。
+    #[allow(clippy::type_complexity)]
     pub fn to_db_fields(
         &self,
-    ) -> (
+        target: &str,
+    ) -> CoreResult<(
         &'static str,
         Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
-    ) {
+    )> {
         match self {
-            PackageKind::Prebuilt {
-                url,
+            PackageKind::Prebuilt { builds } => {
+                let chosen = builds
+                    .iter()
+                    .find(|b| b.target.as_deref() == Some(target))
+                    .or_else(|| builds.iter().find(|b| b.target.is_none()))
+                    .ok_or_else(|| {
+                        let registered: Vec<&str> = builds
+                            .iter()
+                            .map(|b| b.target.as_deref().unwrap_or("<universal>"))
+                            .collect();
+                        CoreError::InvalidPackage(format!(
+                            "no build available for target {target}; registered targets: {registered:?}"
+                        ))
+                    })?;
+                Ok((
+                    "prebuilt",
+                    Some(chosen.url.clone()),
+                    Some(chosen.hash.clone()),
+                    Some(chosen.file_name.clone()),
+                    None,
+                ))
+            }
+            PackageKind::Source {
+                build,
                 hash,
-                file_name,
-            } => (
-                "prebuilt",
-                Some(url.clone()),
-                Some(hash.clone()),
-                Some(file_name.clone()),
-                None,
-            ),
-            PackageKind::Source { build, hash } => {
-                ("source", None, hash.clone(), None, Some(build.clone()))
+                supported_targets,
+            } => {
+                if let Some(supported) = supported_targets {
+                    if !supported.iter().any(|t| t == target) {
+                        return Err(CoreError::InvalidPackage(format!(
+                            "package does not support target {target}; supported targets: {supported:?}"
+                        )));
+                    }
+                }
+                Ok(("source", None, hash.clone(), None, Some(build.clone())))
             }
         }
     }
@@ -367,22 +494,31 @@ impl PackageKind {
         build_command: Option<String>,
     ) -> CoreResult<Self> {
         match kind {
-            "prebuilt" => Ok(PackageKind::Prebuilt {
-                url: url.ok_or_else(|| {
+            "prebuilt" => {
+                let url = url.ok_or_else(|| {
                     CoreError::InvalidPackage("prebuilt package missing url".to_string())
-                })?,
-                hash: hash.ok_or_else(|| {
+                })?;
+                let hash = hash.ok_or_else(|| {
                     CoreError::InvalidPackage("prebuilt package missing hash".to_string())
-                })?,
-                file_name: filename.ok_or_else(|| {
+                })?;
+                let file_name = filename.ok_or_else(|| {
                     CoreError::InvalidPackage("prebuilt package missing filename".to_string())
-                })?,
-            }),
+                })?;
+                Ok(PackageKind::Prebuilt {
+                    builds: vec![PrebuiltBuild {
+                        target: None,
+                        url,
+                        hash,
+                        file_name,
+                    }],
+                })
+            }
             "source" => Ok(PackageKind::Source {
                 build: build_command.ok_or_else(|| {
                     CoreError::InvalidPackage("source package missing build command".to_string())
                 })?,
                 hash,
+                supported_targets: None,
             }),
             other => Err(CoreError::InvalidPackage(format!(
                 "unknown package kind: {other}"
@@ -448,43 +584,46 @@ impl RepoInfo {
 
 #[cfg(feature = "server")]
 impl RepoInfo {
-    /// 新增一個套件版本。同一個套件名稱下,`info.version` 不能跟既有版本重複
-    /// (已發布版本不可變——要換內容是撤下重發,不是原地覆寫)。
+    /// 同一個 `(name, version)` 已經發布過時,唯一允許的例外是「幫既有
+    /// `Prebuilt` 版本追加一組新 target 的 build」(`dpm-server fix add
+    /// ... url --target <T>` 對同版本連續呼叫多次,`AddKind::Build`/
+    /// `Source` 套件沒有這個例外,同版本第二次發布一律拒絕)。追加的
+    /// target 如果已經存在(含兩邊都是 `None`,即兩次都沒帶 `--target`),
+    /// 一樣拒絕。
     pub fn add_package_version(
         &mut self,
         name: String,
         info: PackageVersionInfo,
     ) -> CoreResult<()> {
         let versions = self.packages.entry(name).or_default();
-        if versions.iter().any(|v| v.version == info.version) {
-            return Err(CoreError::VersionMismatch(format!(
-                "version {} is already published",
-                info.version
-            )));
+        if let Some(existing) = versions.iter_mut().find(|v| v.version == info.version) {
+            return match (&mut existing.kind, &info.kind) {
+                (
+                    PackageKind::Prebuilt {
+                        builds: existing_builds,
+                    },
+                    PackageKind::Prebuilt { builds: new_builds },
+                ) => {
+                    for nb in new_builds {
+                        if existing_builds.iter().any(|b| b.target == nb.target) {
+                            return Err(CoreError::VersionMismatch(format!(
+                                "version {} already has a build for target {}",
+                                info.version,
+                                nb.target.as_deref().unwrap_or("<universal>")
+                            )));
+                        }
+                    }
+                    existing_builds.extend(new_builds.iter().cloned());
+                    Ok(())
+                }
+                _ => Err(CoreError::VersionMismatch(format!(
+                    "version {} is already published",
+                    info.version
+                ))),
+            };
         }
         versions.push(info);
         Ok(())
-    }
-
-    /// 移除某套件的特定版本。移除後若該套件已無任何版本,連同套件名稱一起移除。
-    pub fn remove_package_version(
-        &mut self,
-        package_name: &str,
-        version: &str,
-    ) -> CoreResult<PackageVersionInfo> {
-        let versions = self
-            .packages
-            .get_mut(package_name)
-            .ok_or_else(|| CoreError::PackageNotFound(package_name.to_string()))?;
-        let idx = versions
-            .iter()
-            .position(|v| v.version == version)
-            .ok_or_else(|| CoreError::PackageNotFound(format!("{package_name}@{version}")))?;
-        let removed = versions.remove(idx);
-        if versions.is_empty() {
-            self.packages.remove(package_name);
-        }
-        Ok(removed)
     }
 }
 
@@ -543,6 +682,120 @@ mod toml_storage_tests {
             matches!(err, CoreError::IoError(_)),
             "missing file must surface as CoreError::IoError, got: {err:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod package_kind_target_tests {
+    use super::*;
+
+    fn build(target: Option<&str>, url: &str) -> PrebuiltBuild {
+        PrebuiltBuild {
+            target: target.map(|s| s.to_string()),
+            url: url.to_string(),
+            hash: "a".repeat(64),
+            file_name: "pkg.zip".to_string(),
+        }
+    }
+
+    #[test]
+    fn to_db_fields_picks_the_exact_matching_target() {
+        let kind = PackageKind::Prebuilt {
+            builds: vec![
+                build(Some("x86_64-unknown-linux-gnu"), "https://example.com/linux.zip"),
+                build(Some("aarch64-apple-darwin"), "https://example.com/mac.zip"),
+            ],
+        };
+        let (kind_str, url, _, _, _) = kind.to_db_fields("aarch64-apple-darwin").unwrap();
+        assert_eq!(kind_str, "prebuilt");
+        assert_eq!(url.unwrap(), "https://example.com/mac.zip");
+    }
+
+    #[test]
+    fn to_db_fields_falls_back_to_the_universal_build_when_no_exact_match() {
+        let kind = PackageKind::Prebuilt {
+            builds: vec![
+                build(Some("x86_64-unknown-linux-gnu"), "https://example.com/linux.zip"),
+                build(None, "https://example.com/universal.zip"),
+            ],
+        };
+        let (_, url, _, _, _) = kind.to_db_fields("aarch64-apple-darwin").unwrap();
+        assert_eq!(url.unwrap(), "https://example.com/universal.zip");
+    }
+
+    #[test]
+    fn to_db_fields_errors_when_no_match_and_no_universal_build() {
+        let kind = PackageKind::Prebuilt {
+            builds: vec![build(
+                Some("x86_64-unknown-linux-gnu"),
+                "https://example.com/linux.zip",
+            )],
+        };
+        let err = kind.to_db_fields("aarch64-apple-darwin").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("x86_64-unknown-linux-gnu"),
+            "error must list the registered targets so the user knows what IS available: {msg}"
+        );
+    }
+
+    #[test]
+    fn to_db_fields_accepts_source_package_with_matching_supported_target() {
+        let kind = PackageKind::Source {
+            build: "cc -shared -o lib.so lib.c".to_string(),
+            hash: Some("a".repeat(64)),
+            supported_targets: Some(vec!["aarch64-apple-darwin".to_string()]),
+        };
+        let (kind_str, _, _, _, build_command) = kind.to_db_fields("aarch64-apple-darwin").unwrap();
+        assert_eq!(kind_str, "source");
+        assert_eq!(build_command.unwrap(), "cc -shared -o lib.so lib.c");
+    }
+
+    #[test]
+    fn to_db_fields_rejects_source_package_on_unsupported_target() {
+        let kind = PackageKind::Source {
+            build: "cc -shared -o lib.so lib.c".to_string(),
+            hash: Some("a".repeat(64)),
+            supported_targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+        };
+        let err = kind.to_db_fields("aarch64-apple-darwin").unwrap_err();
+        assert!(err.to_string().contains("x86_64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn to_db_fields_accepts_source_package_with_no_supported_targets_declared() {
+        let kind = PackageKind::Source {
+            build: "cc -shared -o lib.so lib.c".to_string(),
+            hash: Some("a".repeat(64)),
+            supported_targets: None,
+        };
+        assert!(kind.to_db_fields("any-target-at-all").is_ok());
+    }
+
+    #[test]
+    fn old_format_prebuilt_without_builds_array_deserializes_as_one_universal_build() {
+        let json = r#"{"kind":"prebuilt","url":"https://example.com/old.zip","hash":"abc","file_name":"old.zip"}"#;
+        let kind: PackageKind = serde_json::from_str(json).unwrap();
+        match kind {
+            PackageKind::Prebuilt { builds } => {
+                assert_eq!(builds.len(), 1);
+                assert_eq!(builds[0].target, None);
+                assert_eq!(builds[0].url, "https://example.com/old.zip");
+            }
+            _ => panic!("expected Prebuilt"),
+        }
+    }
+
+    #[test]
+    fn old_format_source_without_supported_targets_deserializes_as_none() {
+        let json = r#"{"kind":"source","build":"make"}"#;
+        let kind: PackageKind = serde_json::from_str(json).unwrap();
+        match kind {
+            PackageKind::Source {
+                supported_targets, ..
+            } => assert_eq!(supported_targets, None),
+            _ => panic!("expected Source"),
+        }
     }
 }
 

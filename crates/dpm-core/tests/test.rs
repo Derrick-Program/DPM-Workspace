@@ -11,9 +11,12 @@ mod tests {
             PackageVersionInfo {
                 version: version.to_string(),
                 kind: PackageKind::Prebuilt {
-                    url: format!("http://example.com/{version}"),
-                    hash: "hash123".to_string(),
-                    file_name: "file1.zip".to_string(),
+                    builds: vec![PrebuiltBuild {
+                        target: None,
+                        url: format!("http://example.com/{version}"),
+                        hash: "hash123".to_string(),
+                        file_name: "file1.zip".to_string(),
+                    }],
                 },
                 dependencies: None,
                 entry: None,
