@@ -60,8 +60,11 @@ dependencies = [
  "anyhow",
  "clap",
  "colored",
+ "directories",
  "git2",
  "reqwest 0.12.28",
+ "serde",
+ "tempfile",
  "thiserror 2.0.19",
  "walkdir",
 ]

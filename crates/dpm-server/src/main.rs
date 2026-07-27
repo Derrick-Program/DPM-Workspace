@@ -1,7 +1,9 @@
 mod action;
 mod cli_parse;
+mod config;
 mod error;
 pub use action::*;
+pub use config::*;
 use anyhow::Result;
 use clap::Parser;
 pub use cli_parse::*;
@@ -24,10 +26,12 @@ struct Cli {
 }
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let project_src = current_dir()?.join("packages");
-    let repo_dir = current_dir()?.join("Repo");
-    let keys_dir = current_dir()?.join("keys");
-    let software_repo_info = current_dir()?.join("RepoInfo.json");
+
+    let cfg = load_or_init(&system_config_path(), &user_config_path()?, "DPM_SERVER")?;
+    let project_src = current_dir()?.join(&cfg.project_src);
+    let repo_dir = current_dir()?.join(&cfg.repo_dir);
+    let keys_dir = current_dir()?.join(&cfg.keys_dir);
+    let software_repo_info = current_dir()?.join(&cfg.repo_info);
     create_dir_all(&project_src)?;
     create_dir_all(&repo_dir)?;
     create_dir_all(&keys_dir)?;
