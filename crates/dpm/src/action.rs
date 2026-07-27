@@ -391,10 +391,21 @@ impl ActionInfo {
 
         let mut key_cache: HashMap<String, VerifyingKey> = HashMap::new();
 
+        let target = self_update::get_target();
         for (name, versions) in remote_repo.get_package_handler() {
             for version_info in versions {
                 let (kind_str, url, hash, filename, build_command) =
-                    version_info.kind.to_db_fields();
+                    match version_info.kind.to_db_fields(target) {
+                        Ok(fields) => fields,
+                        Err(e) => {
+                            println!(
+                                "{} skipping {name}@{} — {e}",
+                                "Warning:".yellow(),
+                                version_info.version
+                            );
+                            continue;
+                        }
+                    };
 
                 if is_official {
                     let author = version_info.author.as_deref();
@@ -862,9 +873,12 @@ mod sync_source_tests {
             vec![PackageVersionInfo {
                 version: "1.0.0".to_string(),
                 kind: PackageKind::Prebuilt {
-                    url: "https://example.com/good.zip".to_string(),
-                    hash: good_hash.clone(),
-                    file_name: "good.zip".to_string(),
+                    builds: vec![dpm_core::PrebuiltBuild {
+                        target: None,
+                        url: "https://example.com/good.zip".to_string(),
+                        hash: good_hash.clone(),
+                        file_name: "good.zip".to_string(),
+                    }],
                 },
                 dependencies: None,
                 entry: None,
@@ -878,9 +892,12 @@ mod sync_source_tests {
             vec![PackageVersionInfo {
                 version: "1.0.0".to_string(),
                 kind: PackageKind::Prebuilt {
-                    url: "https://example.com/bad.zip".to_string(),
-                    hash: good_hash.clone(),
-                    file_name: "bad.zip".to_string(),
+                    builds: vec![dpm_core::PrebuiltBuild {
+                        target: None,
+                        url: "https://example.com/bad.zip".to_string(),
+                        hash: good_hash.clone(),
+                        file_name: "bad.zip".to_string(),
+                    }],
                 },
                 dependencies: None,
                 entry: None,
@@ -932,9 +949,12 @@ mod sync_source_tests {
             vec![PackageVersionInfo {
                 version: "1.0.0".to_string(),
                 kind: PackageKind::Prebuilt {
-                    url: "https://example.com/some.zip".to_string(),
-                    hash: good_hash,
-                    file_name: "some.zip".to_string(),
+                    builds: vec![dpm_core::PrebuiltBuild {
+                        target: None,
+                        url: "https://example.com/some.zip".to_string(),
+                        hash: good_hash,
+                        file_name: "some.zip".to_string(),
+                    }],
                 },
                 dependencies: None,
                 entry: None,
@@ -973,9 +993,12 @@ mod sync_source_tests {
             vec![PackageVersionInfo {
                 version: "1.0.0".to_string(),
                 kind: PackageKind::Prebuilt {
-                    url: "https://example.com/unsigned.zip".to_string(),
-                    hash: "irrelevant".to_string(),
-                    file_name: "unsigned.zip".to_string(),
+                    builds: vec![dpm_core::PrebuiltBuild {
+                        target: None,
+                        url: "https://example.com/unsigned.zip".to_string(),
+                        hash: "irrelevant".to_string(),
+                        file_name: "unsigned.zip".to_string(),
+                    }],
                 },
                 dependencies: None,
                 entry: None,
@@ -1021,9 +1044,12 @@ mod sync_source_tests {
             vec![PackageVersionInfo {
                 version: "1.0.0".to_string(),
                 kind: PackageKind::Prebuilt {
-                    url: "https://example.com/evil.zip".to_string(),
-                    hash: good_hash,
-                    file_name: "evil.zip".to_string(),
+                    builds: vec![dpm_core::PrebuiltBuild {
+                        target: None,
+                        url: "https://example.com/evil.zip".to_string(),
+                        hash: good_hash,
+                        file_name: "evil.zip".to_string(),
+                    }],
                 },
                 dependencies: None,
                 entry: None,
@@ -1065,9 +1091,12 @@ mod sync_source_tests {
             vec![PackageVersionInfo {
                 version: "1.0.0".to_string(),
                 kind: PackageKind::Prebuilt {
-                    url: "https://example.com/no-sig.zip".to_string(),
-                    hash: "a".repeat(64),
-                    file_name: "no-sig.zip".to_string(),
+                    builds: vec![dpm_core::PrebuiltBuild {
+                        target: None,
+                        url: "https://example.com/no-sig.zip".to_string(),
+                        hash: "a".repeat(64),
+                        file_name: "no-sig.zip".to_string(),
+                    }],
                 },
                 dependencies: None,
                 entry: None,
@@ -1118,9 +1147,12 @@ mod sync_source_tests {
             vec![PackageVersionInfo {
                 version: "1.0.0".to_string(),
                 kind: PackageKind::Prebuilt {
-                    url: "https://example.com/mismatched.zip".to_string(),
-                    hash: real_hash,
-                    file_name: "mismatched.zip".to_string(),
+                    builds: vec![dpm_core::PrebuiltBuild {
+                        target: None,
+                        url: "https://example.com/mismatched.zip".to_string(),
+                        hash: real_hash,
+                        file_name: "mismatched.zip".to_string(),
+                    }],
                 },
                 dependencies: None,
                 entry: None,
@@ -1151,6 +1183,158 @@ mod sync_source_tests {
             all.len(),
             0,
             "a valid signature over the wrong hash must not verify"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_source_inner_skips_a_prebuilt_version_with_no_build_for_this_target() {
+        let target = self_update::get_target();
+        // 故意登記一個「不是本機 target」的 build,確保這個版本一定會被
+        // 跳過——用一個真實 target 字串裡不會出現的假字串當「另一個平台」,
+        // 避免巧合等於本機 target。
+        let other_target = format!("not-{target}");
+
+        let body = serde_json::to_vec(&FakeRepoInfo {
+            packages: {
+                let mut m = StdHashMap::new();
+                m.insert(
+                    "wrong-target-pkg".to_string(),
+                    vec![PackageVersionInfo {
+                        version: "1.0.0".to_string(),
+                        kind: PackageKind::Prebuilt {
+                            builds: vec![dpm_core::PrebuiltBuild {
+                                target: Some(other_target),
+                                url: "https://example.com/wrong.zip".to_string(),
+                                hash: "a".repeat(64),
+                                file_name: "wrong.zip".to_string(),
+                            }],
+                        },
+                        dependencies: None,
+                        entry: None,
+                        description: None,
+                        author: None,
+                        signature: None,
+                    }],
+                );
+                m
+            },
+        })
+        .unwrap();
+        let repo_info_url = serve_once(body);
+
+        let source = Source {
+            alias: "third-party".to_string(),
+            repo_url: "https://example.com/some-other-repo".to_string(),
+            repo_info: repo_info_url,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        ActionInfo::sync_source_inner(&ctx, &source, false)
+            .await
+            .unwrap();
+
+        let all = ctx.db.read_all().await.unwrap();
+        assert_eq!(
+            all.len(),
+            0,
+            "a Prebuilt version with no build for this machine's target must be skipped, not inserted"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_source_inner_keeps_a_prebuilt_version_with_a_universal_build() {
+        let body = serde_json::to_vec(&FakeRepoInfo {
+            packages: {
+                let mut m = StdHashMap::new();
+                m.insert(
+                    "universal-pkg".to_string(),
+                    vec![PackageVersionInfo {
+                        version: "1.0.0".to_string(),
+                        kind: PackageKind::Prebuilt {
+                            builds: vec![dpm_core::PrebuiltBuild {
+                                target: None,
+                                url: "https://example.com/universal.zip".to_string(),
+                                hash: "a".repeat(64),
+                                file_name: "universal.zip".to_string(),
+                            }],
+                        },
+                        dependencies: None,
+                        entry: None,
+                        description: None,
+                        author: None,
+                        signature: None,
+                    }],
+                );
+                m
+            },
+        })
+        .unwrap();
+        let repo_info_url = serve_once(body);
+
+        let source = Source {
+            alias: "third-party".to_string(),
+            repo_url: "https://example.com/some-other-repo".to_string(),
+            repo_info: repo_info_url,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        ActionInfo::sync_source_inner(&ctx, &source, false)
+            .await
+            .unwrap();
+
+        let all = ctx.db.read_all().await.unwrap();
+        assert_eq!(all.len(), 1, "a universal build must always be kept");
+    }
+
+    #[tokio::test]
+    async fn sync_source_inner_skips_a_source_version_unsupported_on_this_target() {
+        let target = self_update::get_target();
+        let other_target = format!("not-{target}");
+
+        let body = serde_json::to_vec(&FakeRepoInfo {
+            packages: {
+                let mut m = StdHashMap::new();
+                m.insert(
+                    "unsupported-source-pkg".to_string(),
+                    vec![PackageVersionInfo {
+                        version: "1.0.0".to_string(),
+                        kind: PackageKind::Source {
+                            build: "make".to_string(),
+                            hash: Some("a".repeat(64)),
+                            supported_targets: Some(vec![other_target]),
+                        },
+                        dependencies: None,
+                        entry: None,
+                        description: None,
+                        author: None,
+                        signature: None,
+                    }],
+                );
+                m
+            },
+        })
+        .unwrap();
+        let repo_info_url = serve_once(body);
+
+        let source = Source {
+            alias: "third-party".to_string(),
+            repo_url: "https://example.com/some-other-repo".to_string(),
+            repo_info: repo_info_url,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        ActionInfo::sync_source_inner(&ctx, &source, false)
+            .await
+            .unwrap();
+
+        let all = ctx.db.read_all().await.unwrap();
+        assert_eq!(
+            all.len(),
+            0,
+            "a Source version not supporting this target must be skipped"
         );
     }
 }
