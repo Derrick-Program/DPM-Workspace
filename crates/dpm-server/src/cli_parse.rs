@@ -13,6 +13,8 @@ pub enum Commands {
     Keygen(Keygen),
     /// Sign a package's packageInfo.json hash with its author's private key
     Sign(Sign),
+    /// Generate a default config.toml at the user config layer
+    GenConfig(GenConfig),
 }
 
 #[derive(Args, Debug)]
@@ -125,4 +127,11 @@ pub struct Keygen {
 pub struct Sign {
     /// Project Name
     pub name: String,
+}
+
+#[derive(Args, Debug)]
+pub struct GenConfig {
+    /// Overwrite an existing user-tier config.toml
+    #[arg(long)]
+    pub force: bool,
 }
