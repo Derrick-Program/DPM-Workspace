@@ -6,6 +6,7 @@ mod tests {
     mod versioning_tests {
         use dpm_core::*;
 
+        #[allow(dead_code)]
         fn prebuilt(version: &str) -> PackageVersionInfo {
             PackageVersionInfo {
                 version: version.to_string(),
@@ -17,6 +18,8 @@ mod tests {
                 dependencies: None,
                 entry: None,
                 description: None,
+                author: None,
+                signature: None,
             }
         }
 
@@ -145,6 +148,7 @@ mod tests {
             "A test package".to_string(),
             "hash123".to_string(),
             None,
+            None,
         );
 
         let test_file = "output.json";
@@ -219,5 +223,79 @@ mod tests {
 
         std::fs::remove_file(file_a).unwrap();
         std::fs::remove_file(file_b).unwrap();
+    }
+
+    mod signature_tests {
+        use dpm_core::*;
+
+        #[test]
+        fn sign_and_verify_round_trips() {
+            let key = generate_signing_key().unwrap();
+            let hash = "deadbeef".repeat(8);
+            let sig = sign_hash(&key, &hash);
+            assert!(verify_hash_signature(&key.verifying_key(), &hash, &sig).is_ok());
+        }
+
+        #[test]
+        fn verify_rejects_a_signature_over_a_different_hash() {
+            let key = generate_signing_key().unwrap();
+            let hash_a = "a".repeat(64);
+            let hash_b = "b".repeat(64);
+            let sig = sign_hash(&key, &hash_a);
+            assert!(verify_hash_signature(&key.verifying_key(), &hash_b, &sig).is_err());
+        }
+
+        #[test]
+        fn verify_rejects_a_signature_from_a_different_key() {
+            let key_a = generate_signing_key().unwrap();
+            let key_b = generate_signing_key().unwrap();
+            let hash = "c".repeat(64);
+            let sig = sign_hash(&key_a, &hash);
+            assert!(verify_hash_signature(&key_b.verifying_key(), &hash, &sig).is_err());
+        }
+
+        #[test]
+        fn verify_rejects_malformed_hex_signature() {
+            let key = generate_signing_key().unwrap();
+            let hash = "d".repeat(64);
+            let err = verify_hash_signature(&key.verifying_key(), &hash, "not hex!!").unwrap_err();
+            assert!(matches!(err, CoreError::SignatureInvalid(_)));
+        }
+
+        #[test]
+        fn verify_rejects_wrong_length_signature() {
+            let key = generate_signing_key().unwrap();
+            let hash = "e".repeat(64);
+            // 合法 hex,但長度不是 64 bytes(真正的簽章一定是 64 bytes)。
+            let err = verify_hash_signature(&key.verifying_key(), &hash, "ab").unwrap_err();
+            assert!(matches!(err, CoreError::SignatureInvalid(_)));
+        }
+
+        #[test]
+        fn verifying_key_from_bytes_rejects_wrong_length() {
+            let err = verifying_key_from_bytes(&[0u8; 10]).unwrap_err();
+            assert!(matches!(err, CoreError::SignatureInvalid(_)));
+        }
+
+        #[test]
+        fn signing_key_round_trips_through_bytes() {
+            let key = generate_signing_key().unwrap();
+            let bytes = key.to_bytes();
+            let restored = signing_key_from_bytes(&bytes).unwrap();
+            assert_eq!(
+                restored.verifying_key().to_bytes(),
+                key.verifying_key().to_bytes()
+            );
+        }
+
+        #[test]
+        fn hash_bytes_is_deterministic_and_content_sensitive() {
+            let a1 = hash_bytes(b"hello");
+            let a2 = hash_bytes(b"hello");
+            let b = hash_bytes(b"world");
+            assert_eq!(a1, a2);
+            assert_ne!(a1, b);
+            assert_eq!(a1.len(), 64, "blake3 hex output is 32 bytes = 64 hex chars");
+        }
     }
 }

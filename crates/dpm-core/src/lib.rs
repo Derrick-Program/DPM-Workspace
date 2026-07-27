@@ -1,5 +1,7 @@
 mod error;
 mod zip_file;
+pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, Verifier};
 pub use error::*;
 use serde::{Deserialize, Serialize};
 use serde_json::to_writer_pretty;
@@ -13,6 +15,92 @@ pub fn hash_file(path: &Path) -> CoreResult<String> {
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
     Ok(blake3::hash(&buffer).to_hex().to_string())
+}
+
+/// 對任意 bytes 算 blake3 hash,回傳小寫十六進位字串——跟 [`hash_file`] 同一個
+/// 演算法,只是輸入不是檔案而是記憶體內容(`kind: source` 套件的
+/// `build_command` + commit hash 組合就是這樣算的,沒有對應的實體檔案可以餵
+/// 給 `hash_file`)。
+pub fn hash_bytes(data: &[u8]) -> String {
+    blake3::hash(data).to_hex().to_string()
+}
+
+/// 產生一把新的 ed25519 簽章金鑰對——`dpm-server keygen` 用。簽章本身
+/// (`sign_hash`)是確定性的,不需要隨機性,只有「產生新金鑰」這一步需要
+/// CSPRNG,直接用 `getrandom` 填 32 bytes seed 建構 `SigningKey`,不透過
+/// `SigningKey::generate`(那需要額外開 `ed25519-dalek` 的 `rand_core`
+/// feature 並拉近一個版本可能跟其他依賴打架的 `rand_core` crate——這裡不需要)。
+pub fn generate_signing_key() -> CoreResult<SigningKey> {
+    let mut secret = [0u8; 32];
+    getrandom::getrandom(&mut secret)
+        .map_err(|e| CoreError::SecurityError(format!("failed to generate random key: {e}")))?;
+    Ok(SigningKey::from_bytes(&secret))
+}
+
+/// 把讀出來的 32 bytes 私鑰檔案內容還原成 `SigningKey`。
+pub fn signing_key_from_bytes(bytes: &[u8]) -> CoreResult<SigningKey> {
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| CoreError::SignatureInvalid("private key must be 32 bytes".to_string()))?;
+    Ok(SigningKey::from_bytes(&arr))
+}
+
+/// 把讀出來的 32 bytes 公鑰檔案內容(`keys/<author_id>.pub`)還原成
+/// `VerifyingKey`。`dpm-server fix add`(讀本機 `keys/` 目錄)、`dpm`
+/// client(讀從官方 repo 抓下來的 raw bytes)共用同一份實作。
+pub fn verifying_key_from_bytes(bytes: &[u8]) -> CoreResult<VerifyingKey> {
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| CoreError::SignatureInvalid("public key must be 32 bytes".to_string()))?;
+    VerifyingKey::from_bytes(&arr).map_err(|e| CoreError::SignatureInvalid(e.to_string()))
+}
+
+/// 對一個 hex 編碼的 hash 字串(`packageInfo.json.hash`/`PackageKind` 的
+/// hash 欄位本身,不是重新雜湊一次)簽章,回傳 hex 編碼的簽章字串。
+pub fn sign_hash(signing_key: &SigningKey, hash_hex: &str) -> String {
+    let sig: Signature = signing_key.sign(hash_hex.as_bytes());
+    hex::encode(sig.to_bytes())
+}
+
+/// 檢查 `author` 是否只由 `[A-Za-z0-9_-]` 組成且非空——多個呼叫端
+/// (`dpm-server` 的 `init`/`sign`/`verify_publish_authorization`、`dpm` 的
+/// `verify_official_signature`)都會把 `author` 直接當路徑片段組出
+/// `keys_dir.join(...)`,而 `author` 的來源(`packageInfo.json`/
+/// `RepoInfo.json`/CLI 參數)都是攻擊者可控的資料。沒有這層檢查,
+/// 像 `"../../../mallory/evil-keys/main/keys/mallory"` 這樣的值可以逃出
+/// `keys_dir`,讀到任意檔案,或把「官方」金鑰抓取重導向到攻擊者控制的位置。
+/// 之前這個檢查在 `dpm-server`、`dpm` 各自複製了一份;這裡集中成一份共用實作。
+pub fn validate_author_id(author: &str) -> CoreResult<()> {
+    if author.is_empty()
+        || !author
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(CoreError::SignatureInvalid(format!(
+            "author id '{author}' contains invalid characters — must match [A-Za-z0-9_-]+"
+        )));
+    }
+    Ok(())
+}
+
+/// 驗證 `signature_hex` 是否是 `verifying_key` 對 `hash_hex` 的合法簽章。
+/// hex 格式錯誤、簽章長度不對、驗證不過——任何一步失敗都回傳同一種
+/// `CoreError::SignatureInvalid`,呼叫端不需要分辨失敗原因,一律視為
+/// 「這個簽章不可信」。
+pub fn verify_hash_signature(
+    verifying_key: &VerifyingKey,
+    hash_hex: &str,
+    signature_hex: &str,
+) -> CoreResult<()> {
+    let sig_bytes = hex::decode(signature_hex)
+        .map_err(|e| CoreError::SignatureInvalid(format!("signature is not valid hex: {e}")))?;
+    let sig_bytes: [u8; 64] = sig_bytes
+        .try_into()
+        .map_err(|_| CoreError::SignatureInvalid("signature must be 64 bytes".to_string()))?;
+    let signature = Signature::from_bytes(&sig_bytes);
+    verifying_key
+        .verify(hash_hex.as_bytes(), &signature)
+        .map_err(|e| CoreError::SignatureInvalid(e.to_string()))
 }
 
 /// `dpm`、`dpm-server` 兩個 CLI 的 clap 配色主題,共用同一份實作。
@@ -69,6 +157,15 @@ pub struct PackageInfo {
     pub description: String,
     pub hash: String,
     pub dependencies: Option<Vec<Dependency>>,
+    /// 發布這個版本的作者 id(`keys/<author_id>.pub` 的檔名)。`Option` 是為了
+    /// 讓舊格式(這次改動之前產生)的 `packageInfo.json` 還能被解析——
+    /// `dpm-server init --author` 之後一律會填。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// `dpm-server sign` 對 `hash` 欄位簽出來的 hex 簽章。`init` 建立時是
+    /// `None`,只有 `sign` 這一個指令會寫入。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 impl PackageInfo {
@@ -81,9 +178,10 @@ impl PackageInfo {
     /// - `description`: 套件描述
     /// - `hash`: 套件檔案的雜湊值
     /// - `dependencies`: 可選的依賴列表
+    /// - `author`: 發布這個版本的作者 id
     ///
     /// # 回傳
-    /// 回傳一個新的 `PackageInfo` 結構體
+    /// 回傳一個新的 `PackageInfo` 結構體(`signature` 一律從 `None` 開始)
     pub fn new(
         package_name: String,
         file_name: String,
@@ -91,6 +189,7 @@ impl PackageInfo {
         description: String,
         hash: String,
         dependencies: Option<Vec<Dependency>>,
+        author: Option<String>,
     ) -> PackageInfo {
         PackageInfo {
             package_name,
@@ -99,6 +198,8 @@ impl PackageInfo {
             description,
             hash,
             dependencies,
+            author,
+            signature: None,
         }
     }
 }
@@ -176,8 +277,25 @@ pub enum PackageKind {
         hash: String,
         file_name: String,
     },
-    /// 只提供原始碼 + build 指令,client 在本機執行 build(Phase 4 才會真的走這條路)。
-    Source { build: String },
+    /// 只提供原始碼 + build 指令,client 在本機執行 build。`hash` 是
+    /// `blake3(build_command + commit hash)`(`dpm-server hash --build`
+    /// 算出來的),`Option` 是因為還沒被 `hash`+`sign` 過的草稿狀態下沒有值。
+    ///
+    /// 已知、刻意延後處理的缺口(非本次功能涵蓋範圍,不要當成已解決):這個
+    /// hash 綁定的是 `build_command` 字串加上發布當下的 commit,但 commit
+    /// 本身沒有被發布到任何 client 端可以驗證的地方,client 目前也完全沒有
+    /// 重算這個 hash 並跟簽章比對——`build` 欄位是直接從 `RepoInfo.json`
+    /// 讀出來就拿去執行(見 `dpm/src/action.rs::install_source_package`)。
+    /// 也就是說,對 `kind: source` 套件而言,簽章目前**不提供任何**對
+    /// `build_command` 或原始碼樹的保護:只要能改 `RepoInfo.json`(不需要
+    /// 簽名金鑰),就能把 `build` 換成任意指令,client 端的驗證閘門不會擋下
+    /// 來。`kind: Prebuilt` 不受影響(下載內容有獨立 hash 比對,見
+    /// `fetch_and_verify_prebuilt`)。
+    Source {
+        build: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hash: Option<String>,
+    },
 }
 
 impl PackageKind {
@@ -206,7 +324,9 @@ impl PackageKind {
                 Some(file_name.clone()),
                 None,
             ),
-            PackageKind::Source { build } => ("source", None, None, None, Some(build.clone())),
+            PackageKind::Source { build, hash } => {
+                ("source", None, hash.clone(), None, Some(build.clone()))
+            }
         }
     }
 
@@ -235,6 +355,7 @@ impl PackageKind {
                 build: build_command.ok_or_else(|| {
                     CoreError::InvalidPackage("source package missing build command".to_string())
                 })?,
+                hash,
             }),
             other => Err(CoreError::InvalidPackage(format!(
                 "unknown package kind: {other}"
@@ -254,6 +375,13 @@ pub struct PackageVersionInfo {
     pub entry: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// 發布這個版本的作者 id。只有 `source.repo_url == OFFICIAL_REPO_URL`
+    /// 的來源會被 client 拿來做簽章驗證,其他來源忽略這個欄位。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// `dpm-server sign` 簽出來的 hex 簽章,簽的是 `kind` 裡的 hash 欄位。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 /// 儲存庫的資訊管理模組——代表「一個來源」自己的索引,不含來源名稱本身

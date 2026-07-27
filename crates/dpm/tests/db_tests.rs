@@ -32,6 +32,8 @@ mod db_tests {
             "A test package",
             Some("bin/test_pkg".to_string()),
             None,
+            None,
+            None,
         )
     }
 

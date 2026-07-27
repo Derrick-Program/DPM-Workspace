@@ -8,7 +8,7 @@ use std::{fs::File, path::Path};
 /// columns up by name, so reordering columns here can't silently desync a
 /// query string from the decode logic.
 const COLUMNS: &str =
-    "source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies";
+    "source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies, author, signature";
 
 #[derive(Debug)]
 pub struct Db {
@@ -83,6 +83,16 @@ impl Db {
             include_str!("../../migrations/0003_nullable_entry.down.sql"),
         )
         .map_err(|e| ClientError::Core(IoError(e)))?;
+        std::fs::write(
+            migrations_dir.join("0004_package_signatures.up.sql"),
+            include_str!("../../migrations/0004_package_signatures.up.sql"),
+        )
+        .map_err(|e| ClientError::Core(IoError(e)))?;
+        std::fs::write(
+            migrations_dir.join("0004_package_signatures.down.sql"),
+            include_str!("../../migrations/0004_package_signatures.down.sql"),
+        )
+        .map_err(|e| ClientError::Core(IoError(e)))?;
 
         geni::migrate_database(
             format!("sqlite://{}", self.db_path),
@@ -142,6 +152,8 @@ impl Db {
             description: get_text("description")?,
             entry: get_opt_text("entry")?,
             dependencies: dependencies_json.and_then(|json| serde_json::from_str(&json).ok()),
+            author: get_opt_text("author")?,
+            signature: get_opt_text("signature")?,
         })
     }
 
@@ -167,10 +179,12 @@ impl Db {
             turso::Value::Text(pkg.description),
             to_value(pkg.entry),
             to_value(dependencies_json),
+            to_value(pkg.author),
+            to_value(pkg.signature),
         ];
         conn.execute(
             &format!(
-                "INSERT INTO LocalRepo ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+                "INSERT INTO LocalRepo ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"
             ),
             params,
         )

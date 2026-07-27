@@ -9,12 +9,21 @@ pub enum Commands {
     Build(Build),
     ///Create Project
     Init(Init),
+    /// Generate an ed25519 signing key pair for a package author
+    Keygen(Keygen),
+    /// Sign a package's packageInfo.json hash with its author's private key
+    Sign(Sign),
 }
 
 #[derive(Args, Debug)]
 pub struct Hash {
     /// Project Name
     pub package_name: String,
+    /// Build command for a `kind: source` package — when given, computes a
+    /// signable hash from this command + the current git HEAD commit
+    /// instead of walking `packages/<name>/`'s files.
+    #[arg(long)]
+    pub build: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -34,6 +43,9 @@ pub struct Init {
     #[arg(long, short = 'd', default_value = "description")]
     ///Project Description
     pub description: String,
+    /// Author id this package's key belongs to (see `dpm-server keygen`)
+    #[arg(long)]
+    pub author: String,
 }
 
 #[derive(Args, Debug)]
@@ -98,4 +110,19 @@ pub struct Del {
     pub project_name: String,
     /// Version to remove (required if the package has more than one published version)
     pub version: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct Keygen {
+    /// Author id (e.g. a GitHub username) this key belongs to
+    pub author_id: String,
+    /// Overwrite an existing key pair for this author
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct Sign {
+    /// Project Name
+    pub name: String,
 }

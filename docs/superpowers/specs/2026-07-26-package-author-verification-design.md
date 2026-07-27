@@ -16,6 +16,8 @@
 
 **擋不住**(明確告知使用者,不誇大保護範圍):作者公鑰本身(`keys/<author_id>.pub`)是 client 即時從官方 repo 抓的,信任層級跟 `RepoInfo.json` 本身一樣——如果官方 repo 整個被接手(不只是改 `RepoInfo.json`,連 `keys/` 目錄也能改),攻擊者可以連公鑰一起換掉,形式上還是驗證得過。這個系統防的是「這個版本沒有經過原作者的私鑰簽署」,不是防「官方 repo 完全淪陷」——後者是 branch protection/帳號安全那個層級的問題,不是簽章系統要解的。
 
+**已知、刻意延後的缺口(不要當成已解決)**:`kind: source` 套件簽的 hash 是 `build_command + 發布當下的 commit`,但 commit 本身沒有發布到任何 client 端可以驗證的地方,client 目前也完全沒有重算這個 hash 並跟簽章比對——`build_command` 是直接從 `RepoInfo.json` 讀出來就拿去 `sh -c` 執行。也就是說對 `kind: source` 套件而言,只要能改 `RepoInfo.json`(不需要簽名金鑰),就能把 `build_command` 換成任意指令,`install_resolved_with_gate` 這個簽章閘門目前擋不住。`kind: prebuilt` 不受影響(下載內容有獨立的 hash 比對)。這是本次功能刻意排除、留給未來 follow-up 的範圍,不是誤判成安全的邊界情況。
+
 ## 目標
 
 - `dpm-server` 新增 `keygen`/`sign` 子指令,`init` 加上 `--author` 必填參數。

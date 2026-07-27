@@ -486,6 +486,8 @@ mod tests {
             "",
             None,
             dependencies,
+            None,
+            None,
         )
     }
 
