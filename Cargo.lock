@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "DPM"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "DPM-Core",
  "anyhow",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "DPM-Core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anstyle",
  "blake3",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "DPM-Server"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "DPM-Core",
  "anyhow",
