@@ -1,7 +1,7 @@
 # RepoInfo.db & Dual-Database Architecture Design
 
-**Date**: 2026-07-28  
-**Status**: Approved  
+**Date**: 2026-07-28
+**Status**: Approved
 **Scope**: `crates/dpm-core`, `crates/dpm`, `crates/dpm-server`
 
 ---
@@ -13,6 +13,7 @@ DPM currently uses a single JSON index file (`RepoInfo.json`) for remote package
 As package registries scale, single JSON index files suffer from performance degradation due to full-file JSON parsing overhead. Furthermore, mixing remote index cache and local installation state in a single DB table makes state cleanup, backup, and isolation difficult.
 
 This design introduces a **Pure SQLite Dual-Database Architecture**:
+
 1. **Server Index**: Replaces `RepoInfo.json` with `RepoInfo.db` (a static SQLite database committed and served directly).
 2. **Client Cache Isolation**: Separates client state into `LocalRepoInfo.db` (remote index cache) and `LocalRepo.db` (local installed packages & file manifest).
 
@@ -118,11 +119,13 @@ CREATE TABLE IF NOT EXISTS Packages (
 ## 4. Workflows & Interfaces
 
 ### 4.1 Server (`dpm-server`) Workflows
+
 - **`dpm-server init/build/hash/sign/fix add`**:
   Instead of reading/writing `RepoInfo.json`, all subcommands open and execute SQL queries on `crates/dpm-server/RepoInfo.db`.
 - **Default Repo File**: `crates/dpm-server/RepoInfo.db` is committed to git tracking. `RepoInfo.json` is deprecated and removed.
 
 ### 4.2 Client (`dpm`) Workflows
+
 - **`dpm update`**:
   1. Downloads `RepoInfo.db` from each source (e.g. `https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/RepoInfo.db` for `official`).
   2. Clears and populates the source's entries in `LocalRepoInfo.db`.

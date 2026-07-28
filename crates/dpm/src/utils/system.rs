@@ -302,7 +302,10 @@ impl SystemController {
         ];
         for dir in env_dirs {
             let dir_str = dir.to_str().ok_or_else(|| {
-                ClientError::SystemError(format!("Invalid UTF-8 in directory path: {}", dir.display()))
+                ClientError::SystemError(format!(
+                    "Invalid UTF-8 in directory path: {}",
+                    dir.display()
+                ))
             })?;
             self.system_command_runner("mkdir", vec!["-p", dir_str], "Can't create directory")?;
         }
@@ -354,11 +357,8 @@ impl SystemController {
     pub async fn init_existing(&self, ctx: &Context) -> ClientResult<Setting> {
         self.bootstrap_dirs(ctx)?;
         let config_path = ctx.config_path();
-        let mut setting: Setting = dpm_core::load_layered(
-            &Context::system_config_path(),
-            &config_path,
-            "DPM",
-        )?;
+        let mut setting: Setting =
+            dpm_core::load_layered(&Context::system_config_path(), &config_path, "DPM")?;
 
         // Enforce that official source is strictly hardcoded to OFFICIAL_REPO_URL
         // and cannot be modified or omitted via config files or env vars.

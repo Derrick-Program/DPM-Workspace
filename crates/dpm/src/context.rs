@@ -69,7 +69,11 @@ fn compute_paths(scope: Scope) -> ClientResult<Paths> {
 }
 
 async fn open_db(main_dir: &std::path::Path, is_info: bool) -> ClientResult<Db> {
-    let name = if is_info { "LocalRepoInfo" } else { "LocalRepo" };
+    let name = if is_info {
+        "LocalRepoInfo"
+    } else {
+        "LocalRepo"
+    };
     let db_path = main_dir.join(format!("{name}.db"));
     let lock_path = main_dir.join(format!("{name}.lock"));
     let db = Db::new(db_path.to_str().unwrap(), lock_path.to_str().unwrap())
@@ -99,15 +103,33 @@ impl Context {
         }
     }
 
-    pub fn sbin_dir(&self) -> PathBuf { self.main_dir.join("sbin") }
-    pub fn lib_dir(&self) -> PathBuf { self.main_dir.join("lib") }
-    pub fn include_dir(&self) -> PathBuf { self.main_dir.join("include") }
-    pub fn share_dir(&self) -> PathBuf { self.main_dir.join("share") }
-    pub fn completions_dir(&self) -> PathBuf { self.main_dir.join("completions") }
-    pub fn docs_dir(&self) -> PathBuf { self.main_dir.join("docs") }
-    pub fn opt_dir(&self) -> PathBuf { self.main_dir.join("opt") }
-    pub fn etc_dir(&self) -> PathBuf { self.main_dir.join("etc") }
-    pub fn var_dir(&self) -> PathBuf { self.main_dir.join("var") }
+    pub fn sbin_dir(&self) -> PathBuf {
+        self.main_dir.join("sbin")
+    }
+    pub fn lib_dir(&self) -> PathBuf {
+        self.main_dir.join("lib")
+    }
+    pub fn include_dir(&self) -> PathBuf {
+        self.main_dir.join("include")
+    }
+    pub fn share_dir(&self) -> PathBuf {
+        self.main_dir.join("share")
+    }
+    pub fn completions_dir(&self) -> PathBuf {
+        self.main_dir.join("completions")
+    }
+    pub fn docs_dir(&self) -> PathBuf {
+        self.main_dir.join("docs")
+    }
+    pub fn opt_dir(&self) -> PathBuf {
+        self.main_dir.join("opt")
+    }
+    pub fn etc_dir(&self) -> PathBuf {
+        self.main_dir.join("etc")
+    }
+    pub fn var_dir(&self) -> PathBuf {
+        self.main_dir.join("var")
+    }
 
     /// Production constructor. Resolves `scope`'s real paths, creates
     /// `main_dir` (fixing ownership under `--system`) if it doesn't exist

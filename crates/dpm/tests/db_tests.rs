@@ -71,7 +71,9 @@ mod db_tests {
         pkg.entry = None;
         db.insert_available(pkg).await?;
 
-        let found = db.read_one_available("official", "test_pkg", "0.1.0").await?;
+        let found = db
+            .read_one_available("official", "test_pkg", "0.1.0")
+            .await?;
         assert_eq!(found.unwrap().entry, None);
         Ok(())
     }
@@ -82,14 +84,18 @@ mod db_tests {
         let db = setup_db(dir.path(), true).await?;
         db.insert_available(sample_pkg("official", "0.1.0")).await?;
 
-        let found = db.read_one_available("official", "test_pkg", "0.1.0").await?;
+        let found = db
+            .read_one_available("official", "test_pkg", "0.1.0")
+            .await?;
         assert!(found.is_some());
         assert_eq!(found.unwrap().hash, Some("1234567890abcdef".to_string()));
 
         let wrong_source = db.read_one_available("other", "test_pkg", "0.1.0").await?;
         assert!(wrong_source.is_none());
 
-        let wrong_version = db.read_one_available("official", "test_pkg", "9.9.9").await?;
+        let wrong_version = db
+            .read_one_available("official", "test_pkg", "9.9.9")
+            .await?;
         assert!(wrong_version.is_none());
         Ok(())
     }
@@ -111,7 +117,8 @@ mod db_tests {
         let dir = tempdir()?;
         let db = setup_db(dir.path(), true).await?;
         db.insert_available(sample_pkg("official", "0.1.0")).await?;
-        db.insert_available(sample_pkg("third-party", "0.1.0")).await?;
+        db.insert_available(sample_pkg("third-party", "0.1.0"))
+            .await?;
 
         let mut sources = db.sources_of("test_pkg").await?;
         sources.sort();
@@ -145,7 +152,8 @@ mod db_tests {
         let dir = tempdir()?;
         let db = setup_db(dir.path(), true).await?;
         db.insert_available(sample_pkg("official", "0.1.0")).await?;
-        db.insert_available(sample_pkg("third-party", "0.1.0")).await?;
+        db.insert_available(sample_pkg("third-party", "0.1.0"))
+            .await?;
 
         db.clear_table_for_source("official").await?;
 
@@ -186,7 +194,9 @@ mod db_tests {
         assert!(Db::validate_table_name("schema_migrations").is_ok());
         assert!(Db::validate_table_name("custom_table_1").is_ok());
 
-        assert!(Db::validate_table_name("InstalledPackages; DROP TABLE InstalledPackages;--").is_err());
+        assert!(
+            Db::validate_table_name("InstalledPackages; DROP TABLE InstalledPackages;--").is_err()
+        );
         assert!(Db::validate_table_name("invalid-table-name").is_err());
         assert!(Db::validate_table_name("123invalid").is_err());
         assert!(Db::validate_table_name("").is_err());

@@ -276,7 +276,14 @@ mod tests {
         let lib_dir = main_dir.join("lib");
         let include_dir = main_dir.join("include");
 
-        for d in [&main_dir, &install_dir, &bin_dir, &opt_dir, &lib_dir, &include_dir] {
+        for d in [
+            &main_dir,
+            &install_dir,
+            &bin_dir,
+            &opt_dir,
+            &lib_dir,
+            &include_dir,
+        ] {
             fs::create_dir_all(d).unwrap();
         }
 
@@ -300,15 +307,27 @@ mod tests {
 
         // 1. Verify opt/mypkg -> Software/mypkg
         let opt_link = opt_dir.join("mypkg");
-        assert!(opt_link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(opt_link
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert_eq!(fs::read_link(&opt_link).unwrap(), install_dir.join("mypkg"));
 
         // 2. Verify sub-directory links (lib/libtest.so & include/test.h)
         let linked_lib = lib_dir.join("libtest.so");
-        assert!(linked_lib.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(linked_lib
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
 
         let linked_inc = include_dir.join("test.h");
-        assert!(linked_inc.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(linked_inc
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]
@@ -342,7 +361,11 @@ mod tests {
 
         // 1. Verify share/hello/readme.md exists and is a symlink
         let namespaced_doc = share_dir.join("hello").join("readme.md");
-        assert!(namespaced_doc.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(namespaced_doc
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert!(tracked.contains(&namespaced_doc.display().to_string()));
 
         // 2. Verify non-existent package subdirectories (e.g. sbin, etc) were ignored
