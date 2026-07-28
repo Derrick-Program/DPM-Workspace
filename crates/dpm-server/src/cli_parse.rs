@@ -3,7 +3,7 @@ use clap::{Args, Subcommand};
 pub enum Commands {
     /// Hash File or all in Project File
     Hash(Hash),
-    /// Fix Packages.json
+    /// Update or fix RepoInfo.db
     Fix(Fix),
     /// Build Package
     Build(Build),
@@ -59,9 +59,9 @@ pub struct Fix {
 
 #[derive(Subcommand, Debug)]
 pub enum FixAction {
-    /// add Package to Packages.json
+    /// Add package entry to RepoInfo.db
     Add(Add),
-    /// delete Package from Packages.json
+    /// Delete package entry from RepoInfo.db
     Del(Del),
 }
 
