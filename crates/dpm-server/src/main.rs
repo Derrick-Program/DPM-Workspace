@@ -24,7 +24,8 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if let Commands::GenConfig(obj) = &cli.command {
@@ -42,8 +43,14 @@ fn main() -> Result<()> {
     create_dir_all(&project_src)?;
     create_dir_all(&repo_dir)?;
     create_dir_all(&keys_dir)?;
-    let conn = rusqlite::Connection::open(&software_repo_info)
-        .map_err(|e| anyhow::anyhow!("Failed to open RepoInfo.db: {}", e))?;
+
+    let db = turso::Builder::new_local(software_repo_info.to_str().unwrap())
+        .build()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to build RepoInfo.db database: {}", e))?;
+    let conn = db
+        .connect()
+        .map_err(|e| anyhow::anyhow!("Failed to connect to RepoInfo.db: {}", e))?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS Packages (
             name TEXT NOT NULL,
@@ -61,18 +68,18 @@ fn main() -> Result<()> {
             targets TEXT,
             PRIMARY KEY (name, version)
         )",
-        [],
+        (),
     )
+    .await
     .map_err(|e| anyhow::anyhow!("Failed to initialize RepoInfo.db table: {}", e))?;
 
     match &cli.command {
         Commands::Hash(obj) => hash(obj, &project_src, &repo_dir)?,
-        Commands::Fix(obj) => fix(obj, &conn, &project_src, &keys_dir)?,
+        Commands::Fix(obj) => fix(obj, &conn, &project_src, &keys_dir).await?,
         Commands::Build(obj) => build(obj, &project_src, &repo_dir)?,
         Commands::Init(obj) => init(obj, &project_src, &keys_dir)?,
         Commands::Keygen(obj) => keygen(obj, &keys_dir)?,
         Commands::Sign(obj) => sign(obj, &project_src, &keys_dir)?,
-        // 已經在函式最前面攔截並提早回傳了,這裡理論上永遠不會執行到。
         Commands::GenConfig(_) => unreachable!("GenConfig is handled earlier in main()"),
     }
     Ok(())

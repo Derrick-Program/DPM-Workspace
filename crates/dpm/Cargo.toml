@@ -33,4 +33,4 @@ sudo = "0.6.0"
 tempfile = "3.10.1"
 thiserror.workspace = true
 tokio.workspace = true
-turso = "0.6.1"
+turso.workspace = true

@@ -234,15 +234,15 @@ pub fn init(obj: &Init, project_src: &Path, keys_dir: &Path) -> ServerResult<()>
     Ok(())
 }
 
-pub fn fix(
+pub async fn fix(
     obj: &Fix,
-    conn: &rusqlite::Connection,
+    conn: &turso::Connection,
     project_src: &Path,
     keys_dir: &Path,
 ) -> ServerResult<()> {
     match &obj.command {
-        FixAction::Add(obj) => fix_add(obj, conn, project_src, keys_dir)?,
-        FixAction::Del(obj) => fix_del(obj, conn)?,
+        FixAction::Add(obj) => fix_add(obj, conn, project_src, keys_dir).await?,
+        FixAction::Del(obj) => fix_del(obj, conn).await?,
     }
     Ok(())
 }
@@ -253,9 +253,9 @@ pub fn fix(
 /// 3. 如果這個套件名稱在 `repo` 裡已經有版本,新版本的 `author` 必須跟第一次
 ///    發布時登記的 author 相同——這是防冒名頂替的核心檢查。沒有既有版本代表
 ///    這是第一次發布,直接放行(沒有「跟誰比對」的問題)。
-fn verify_publish_authorization(
+async fn verify_publish_authorization(
     pk_info: &PackageInfo,
-    conn: &rusqlite::Connection,
+    conn: &turso::Connection,
     project_name: &str,
     keys_dir: &Path,
 ) -> ServerResult<()> {
@@ -293,10 +293,24 @@ fn verify_publish_authorization(
         ))
     })?;
 
-    let mut stmt = conn
-        .prepare("SELECT author FROM Packages WHERE name = ? ORDER BY version ASC LIMIT 1")
+    let mut rows = conn
+        .query(
+            "SELECT author FROM Packages WHERE name = ?1 ORDER BY version ASC LIMIT 1",
+            [project_name],
+        )
+        .await
         .map_err(|e| ServerError::ValidationError(format!("Database error: {e}")))?;
-    let existing_author: Option<String> = stmt.query_row([project_name], |row| row.get(0)).ok();
+    let existing_author: Option<String> = if let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| ServerError::ValidationError(format!("Database error: {e}")))?
+    {
+        row.get_value(0)
+            .ok()
+            .and_then(|v| v.as_text().map(|s| s.to_string()))
+    } else {
+        None
+    };
 
     if let Some(existing) = existing_author {
         if existing != author {
@@ -308,16 +322,16 @@ fn verify_publish_authorization(
     Ok(())
 }
 
-fn fix_add(
+async fn fix_add(
     obj: &Add,
-    conn: &rusqlite::Connection,
+    conn: &turso::Connection,
     project_src: &Path,
     keys_dir: &Path,
 ) -> ServerResult<()> {
     let path = project_src.join(&obj.project_name);
     let pk_info: PackageInfo = JsonStorage::from_json(&path.join("packageInfo.json"))?;
 
-    verify_publish_authorization(&pk_info, conn, &obj.project_name, keys_dir)?;
+    verify_publish_authorization(&pk_info, conn, &obj.project_name, keys_dir).await?;
 
     let kind = match &obj.kind {
         AddKind::Url {
@@ -428,6 +442,11 @@ fn fix_add(
     let dependencies_str =
         serde_json::to_string(&pk_info.dependencies).unwrap_or_else(|_| "{}".to_string());
 
+    let to_value = |opt: Option<String>| match opt {
+        Some(s) => turso::Value::Text(s),
+        None => turso::Value::Null,
+    };
+
     conn.execute(
         "INSERT INTO Packages (name, version, kind, url, hash, filename, build_command, description, entry, dependencies, author, signature, targets)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
@@ -443,37 +462,50 @@ fn fix_add(
             author = excluded.author,
             signature = excluded.signature,
             targets = excluded.targets",
-        rusqlite::params![
-            obj.project_name,
-            pk_info.version,
-            kind_str,
-            url,
-            pk_info.hash,
-            filename,
-            build_command,
-            pk_info.description,
-            "",
-            dependencies_str,
-            pk_info.author,
-            pk_info.signature,
-            targets_str
-        ]
-    ).map_err(|e| ServerError::ValidationError(format!("Database insert error: {e}")))?;
+        vec![
+            turso::Value::Text(obj.project_name.clone()),
+            turso::Value::Text(pk_info.version.clone()),
+            turso::Value::Text(kind_str.to_string()),
+            to_value(url),
+            to_value(Some(pk_info.hash)),
+            to_value(filename),
+            to_value(build_command),
+            turso::Value::Text(pk_info.description),
+            turso::Value::Text("".to_string()),
+            to_value(Some(dependencies_str)),
+            to_value(pk_info.author),
+            to_value(pk_info.signature),
+            to_value(targets_str),
+        ],
+    )
+    .await
+    .map_err(|e| ServerError::ValidationError(format!("Database insert error: {e}")))?;
     Ok(())
 }
-fn fix_del(obj: &Del, conn: &rusqlite::Connection) -> ServerResult<()> {
+async fn fix_del(obj: &Del, conn: &turso::Connection) -> ServerResult<()> {
     let version = match &obj.version {
         Some(v) => v.clone(),
         None => {
-            let mut stmt = conn
-                .prepare("SELECT version FROM Packages WHERE name = ? ORDER BY version ASC")
+            let mut rows = conn
+                .query(
+                    "SELECT version FROM Packages WHERE name = ?1 ORDER BY version ASC",
+                    [obj.project_name.as_str()],
+                )
+                .await
                 .map_err(|e| ServerError::ValidationError(format!("Database error: {e}")))?;
-            let versions_iter = stmt
-                .query_map([&obj.project_name], |row| row.get(0))
-                .unwrap();
             let mut versions: Vec<String> = Vec::new();
-            for val in versions_iter.flatten() {
-                versions.push(val);
+            while let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| ServerError::ValidationError(format!("Database error: {e}")))?
+            {
+                if let Some(v) = row
+                    .get_value(0)
+                    .ok()
+                    .and_then(|val| val.as_text().map(|s| s.to_string()))
+                {
+                    versions.push(v);
+                }
             }
             if versions.is_empty() {
                 return Err(ServerError::Core(CoreError::PackageNotFound(
@@ -491,9 +523,10 @@ fn fix_del(obj: &Del, conn: &rusqlite::Connection) -> ServerResult<()> {
         }
     };
     conn.execute(
-        "DELETE FROM Packages WHERE name = ? AND version = ?",
-        [&obj.project_name, &version],
+        "DELETE FROM Packages WHERE name = ?1 AND version = ?2",
+        [obj.project_name.clone(), version.clone()],
     )
+    .await
     .map_err(|e| ServerError::ValidationError(format!("Database delete error: {e}")))?;
     println!(
         "Package '{}@{}' removed successfully.",
@@ -600,22 +633,14 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn fix_add_rejects_a_second_version_signed_by_a_different_author() {
-        let project_src = std::env::temp_dir().join(format!(
-            "dpm-server-fix-add-author-mismatch-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&project_src).unwrap();
-        let keys_dir = project_src.join("keys");
-
-        init_git_repo(&project_src);
-        init_hash_sign_for_build(&project_src, &keys_dir, "demo-pkg", "alice", "v1 build");
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
+    async fn create_test_db(_project_src: &Path) -> (tempfile::TempDir, turso::Connection) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("RepoInfo.db");
+        let db = turso::Builder::new_local(db_path.to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
         conn.execute(
             "CREATE TABLE IF NOT EXISTS Packages (
                 name TEXT NOT NULL,
@@ -633,9 +658,30 @@ mod tests {
                 targets TEXT,
                 PRIMARY KEY (name, version)
             )",
-            [],
+            (),
         )
+        .await
         .unwrap();
+        (temp_dir, conn)
+    }
+
+    #[tokio::test]
+    async fn fix_add_rejects_a_second_version_signed_by_a_different_author() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-fix-add-author-mismatch-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+        let keys_dir = project_src.join("keys");
+
+        init_git_repo(&project_src);
+        init_hash_sign_for_build(&project_src, &keys_dir, "demo-pkg", "alice", "v1 build");
+        let (_td, conn) = create_test_db(&project_src).await;
+
         fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
@@ -648,10 +694,9 @@ mod tests {
             &project_src,
             &keys_dir,
         )
+        .await
         .unwrap();
 
-        // 模擬「一個惡意 PR 想冒充既有作者發新版本」:同一個套件名稱,換一把
-        // 不同作者的金鑰重新 init/hash/sign 出一份新的 packageInfo.json。
         keygen(
             &Keygen {
                 author_id: "mallory".to_string(),
@@ -696,24 +741,21 @@ mod tests {
             &project_src,
             &keys_dir,
         )
+        .await
         .unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
-        let count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM Packages WHERE name = 'demo-pkg'",
-                [],
-                |row| row.get(0),
-            )
+        let mut rows = conn
+            .query("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", ())
+            .await
             .unwrap();
+        let count: i64 = *rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_integer().unwrap();
         assert_eq!(count, 1, "the rejected v2 must not be added");
 
         std::fs::remove_dir_all(&project_src).ok();
     }
 
-    /// 核心「first vs. subsequent version」邏輯的正面案例:同一個作者發第二個
-    /// 版本必須成功,不能被 `verify_publish_authorization` 誤判成作者不符。
-    #[test]
-    fn fix_add_accepts_a_second_version_from_the_same_author() {
+    #[tokio::test]
+    async fn fix_add_accepts_a_second_version_from_the_same_author() {
         let project_src = std::env::temp_dir().join(format!(
             "dpm-server-fix-add-same-author-second-version-test-{}-{}",
             std::process::id(),
@@ -727,27 +769,8 @@ mod tests {
 
         init_git_repo(&project_src);
         init_hash_sign_for_build(&project_src, &keys_dir, "demo-pkg", "alice", "v1 build");
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS Packages (
-                name TEXT NOT NULL,
-                version TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                url TEXT,
-                hash TEXT,
-                filename TEXT,
-                build_command TEXT,
-                description TEXT NOT NULL,
-                entry TEXT,
-                dependencies TEXT,
-                author TEXT,
-                signature TEXT,
-                targets TEXT,
-                PRIMARY KEY (name, version)
-            )",
-            [],
-        )
-        .unwrap();
+        let (_td, conn) = create_test_db(&project_src).await;
+
         fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
@@ -760,9 +783,9 @@ mod tests {
             &project_src,
             &keys_dir,
         )
+        .await
         .unwrap();
 
-        // 同一個作者(alice)重新 init/hash/sign 出下一個版本。
         let info_path = project_src.join("demo-pkg").join("packageInfo.json");
         let mut package_info: PackageInfo = JsonStorage::from_json(&info_path).unwrap();
         package_info.version = "0.2.0".to_string();
@@ -798,30 +821,28 @@ mod tests {
             &project_src,
             &keys_dir,
         )
+        .await
         .unwrap();
 
-        let count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM Packages WHERE name = 'demo-pkg'",
-                [],
-                |row| row.get(0),
-            )
+        let mut rows = conn
+            .query("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", ())
+            .await
             .unwrap();
+        let count: i64 = *rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_integer().unwrap();
         assert_eq!(count, 2);
-        let latest_author: String = conn
-            .query_row(
-                "SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
+
+        let mut rows = conn
+            .query("SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", ())
+            .await
             .unwrap();
+        let latest_author: String = rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_text().unwrap().to_string();
         assert_eq!(latest_author, "alice");
 
         std::fs::remove_dir_all(&project_src).ok();
     }
 
-    #[test]
-    fn fix_add_rejects_a_tampered_signature() {
+    #[tokio::test]
+    async fn fix_add_rejects_a_tampered_signature() {
         let project_src = std::env::temp_dir().join(format!(
             "dpm-server-fix-add-bad-sig-test-{}-{}",
             std::process::id(),
@@ -834,33 +855,12 @@ mod tests {
         let keys_dir = project_src.join("keys");
         init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
 
-        // 直接竄改已簽好的 signature 欄位(不重新 sign)。
         let info_path = project_src.join("demo-pkg").join("packageInfo.json");
         let mut package_info: PackageInfo = JsonStorage::from_json(&info_path).unwrap();
         package_info.signature = Some("0".repeat(128));
         JsonStorage::to_json(&package_info, &info_path).unwrap();
 
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS Packages (
-                name TEXT NOT NULL,
-                version TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                url TEXT,
-                hash TEXT,
-                filename TEXT,
-                build_command TEXT,
-                description TEXT NOT NULL,
-                entry TEXT,
-                dependencies TEXT,
-                author TEXT,
-                signature TEXT,
-                targets TEXT,
-                PRIMARY KEY (name, version)
-            )",
-            [],
-        )
-        .unwrap();
+        let (_td, conn) = create_test_db(&project_src).await;
         let err = fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
@@ -873,15 +873,14 @@ mod tests {
             &project_src,
             &keys_dir,
         )
+        .await
         .unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
-        let count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM Packages WHERE name = 'demo-pkg'",
-                [],
-                |row| row.get(0),
-            )
+        let mut rows = conn
+            .query("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", ())
+            .await
             .unwrap();
+        let count: i64 = *rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_integer().unwrap();
         assert_eq!(count, 0);
 
         std::fs::remove_dir_all(&project_src).ok();
@@ -1084,8 +1083,8 @@ mod tests {
     /// `Build` variant must reach `PackageKind::Source` without touching the
     /// network, and the resulting `RepoInfo` entry must carry the build
     /// command through untouched.
-    #[test]
-    fn fix_add_build_variant_records_a_source_kind_package() {
+    #[tokio::test]
+    async fn fix_add_build_variant_records_a_source_kind_package() {
         let project_src = std::env::temp_dir().join(format!(
             "dpm-server-action-fix-add-build-test-{}-{}",
             std::process::id(),
@@ -1105,27 +1104,7 @@ mod tests {
             "cargo build --release",
         );
 
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS Packages (
-                name TEXT NOT NULL,
-                version TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                url TEXT,
-                hash TEXT,
-                filename TEXT,
-                build_command TEXT,
-                description TEXT NOT NULL,
-                entry TEXT,
-                dependencies TEXT,
-                author TEXT,
-                signature TEXT,
-                targets TEXT,
-                PRIMARY KEY (name, version)
-            )",
-            [],
-        )
-        .unwrap();
+        let (_td, conn) = create_test_db(&project_src).await;
         let add = Add {
             project_name: "demo-pkg".to_string(),
             kind: AddKind::Build {
@@ -1133,17 +1112,23 @@ mod tests {
                 targets: None,
             },
         };
-        fix_add(&add, &conn, &project_src, &keys_dir).unwrap();
+        fix_add(&add, &conn, &project_src, &keys_dir).await.unwrap();
 
-        let latest_author: String = conn
-            .query_row(
-                "SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
+        let mut rows = conn
+            .query("SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", ())
+            .await
             .unwrap();
+        let latest_author: String = rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_text().unwrap().to_string();
         assert_eq!(latest_author, "alice");
-        let (kind, build_command, hash): (String, Option<String>, Option<String>) = conn.query_row("SELECT kind, build_command, hash FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+
+        let mut rows = conn
+            .query("SELECT kind, build_command, hash FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", ())
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let kind: String = row.get_value(0).unwrap().as_text().unwrap().to_string();
+        let build_command: Option<String> = row.get_value(1).ok().and_then(|v| v.as_text().map(|s| s.to_string()));
+        let hash: Option<String> = row.get_value(2).ok().and_then(|v| v.as_text().map(|s| s.to_string()));
         assert_eq!(kind, "source");
         assert_eq!(build_command.unwrap(), "cargo build --release");
         assert!(hash.is_some());
@@ -1151,12 +1136,8 @@ mod tests {
         std::fs::remove_dir_all(&project_src).ok();
     }
 
-    /// Mirrors the Url arm's downloaded-content hash check (untestable here
-    /// without a network call) for the `Build` arm: RepoInfo.db write
-    /// access without the signing key must not be able to swap the build
-    /// command out from under an already-signed packageInfo.json.
-    #[test]
-    fn fix_add_rejects_a_build_command_that_does_not_match_the_signed_hash() {
+    #[tokio::test]
+    async fn fix_add_rejects_a_build_command_that_does_not_match_the_signed_hash() {
         let project_src = std::env::temp_dir().join(format!(
             "dpm-server-fix-add-build-hash-mismatch-test-{}-{}",
             std::process::id(),
@@ -1176,33 +1157,11 @@ mod tests {
             "cargo build --release",
         );
 
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS Packages (
-                name TEXT NOT NULL,
-                version TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                url TEXT,
-                hash TEXT,
-                filename TEXT,
-                build_command TEXT,
-                description TEXT NOT NULL,
-                entry TEXT,
-                dependencies TEXT,
-                author TEXT,
-                signature TEXT,
-                targets TEXT,
-                PRIMARY KEY (name, version)
-            )",
-            [],
-        )
-        .unwrap();
+        let (_td, conn) = create_test_db(&project_src).await;
         let err = fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
-                    // Signed hash was computed over "cargo build --release";
-                    // this doesn't match it.
                     build: "cargo build --release --features malicious".to_string(),
                     targets: None,
                 },
@@ -1211,29 +1170,21 @@ mod tests {
             &project_src,
             &keys_dir,
         )
+        .await
         .unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
-        let count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM Packages WHERE name = 'demo-pkg'",
-                [],
-                |row| row.get(0),
-            )
+        let mut rows = conn
+            .query("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", ())
+            .await
             .unwrap();
+        let count: i64 = *rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_integer().unwrap();
         assert_eq!(count, 0);
 
         std::fs::remove_dir_all(&project_src).ok();
     }
 
-    /// The old `url`/`build` CLI flags used `conflicts_with` to reject
-    /// "both" at parse time but still needed a runtime check for other
-    /// per-variant validation (like the `https://` requirement) inside
-    /// `fix_add` itself. `AddKind::Url` doesn't remove that check — it
-    /// removes the "neither"/"both" states entirely, this test pins down
-    /// that the remaining per-variant validation still runs and fails
-    /// before any network call is attempted.
-    #[test]
-    fn fix_add_url_variant_rejects_non_https_before_any_network_call() {
+    #[tokio::test]
+    async fn fix_add_url_variant_rejects_non_https_before_any_network_call() {
         let project_src = std::env::temp_dir().join(format!(
             "dpm-server-action-fix-add-url-test-{}-{}",
             std::process::id(),
@@ -1246,27 +1197,7 @@ mod tests {
         let keys_dir = project_src.join("keys");
         init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
 
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS Packages (
-                name TEXT NOT NULL,
-                version TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                url TEXT,
-                hash TEXT,
-                filename TEXT,
-                build_command TEXT,
-                description TEXT NOT NULL,
-                entry TEXT,
-                dependencies TEXT,
-                author TEXT,
-                signature TEXT,
-                targets TEXT,
-                PRIMARY KEY (name, version)
-            )",
-            [],
-        )
-        .unwrap();
+        let (_td, conn) = create_test_db(&project_src).await;
         let add = Add {
             project_name: "demo-pkg".to_string(),
             kind: AddKind::Url {
@@ -1275,16 +1206,15 @@ mod tests {
                 target: None,
             },
         };
-        let err = fix_add(&add, &conn, &project_src, &keys_dir).unwrap_err();
+        let err = fix_add(&add, &conn, &project_src, &keys_dir).await.unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
-        assert!(
-            conn.query_row::<i64, _, _>(
-                "SELECT count(*) FROM Packages WHERE name = 'demo-pkg'",
-                [],
-                |row| row.get(0)
-            )
-            .unwrap()
-                == 0,
+        let mut rows = conn
+            .query("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", ())
+            .await
+            .unwrap();
+        let count: i64 = *rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_integer().unwrap();
+        assert_eq!(
+            count, 0,
             "a rejected url must not leave a partial entry in RepoInfo"
         );
 
