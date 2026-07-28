@@ -4,6 +4,8 @@
 
 DPM (Derrick Package Manager) 的 Cargo workspace,整合原本三個獨立 repo。
 
+原本的[github.com/Derrick-Program/DPM-Server](https://github.com/Derrick-Program/DPM-Server) 倉庫以棄用，所有Config中或是代碼中不可以出現，也不可以讀取到
+
 ## 結構
 
 ```
