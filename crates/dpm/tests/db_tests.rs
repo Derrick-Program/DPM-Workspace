@@ -202,7 +202,10 @@ mod db_tests {
         db.clear_table("LocalRepo").await?;
         assert!(db.read_all().await?.is_empty());
 
-        assert!(db.clear_table("LocalRepo; DROP TABLE LocalRepo;--").await.is_err());
+        assert!(db
+            .clear_table("LocalRepo; DROP TABLE LocalRepo;--")
+            .await
+            .is_err());
         assert!(db.drop_table("invalid table").await.is_err());
 
         db.drop_table("LocalRepo").await?;

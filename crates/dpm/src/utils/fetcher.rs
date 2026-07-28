@@ -26,14 +26,26 @@ pub async fn fetch_and_verify_prebuilt(
         .ok_or_else(|| ClientError::Core(CoreError::InvalidPackage(format!("{pkg} has no url"))))?;
     download_file(url, download_path).await?;
 
-    let package_info_str = read_file_from_zip(download_path, "packageInfo.json")
-        .map_err(|e| ClientError::Core(CoreError::InvalidPackage(format!("{pkg} missing packageInfo.json in zip: {e}"))))?;
-    let package_info: PackageInfo = JsonStorage::from_str_to(&package_info_str)
-        .map_err(|e| ClientError::Core(CoreError::InvalidPackage(format!("{pkg} has invalid packageInfo.json: {e}"))))?;
-    let hashes_str = read_file_from_zip(download_path, "hashes.json")
-        .map_err(|e| ClientError::Core(CoreError::InvalidPackage(format!("{pkg} missing hashes.json in zip: {e}"))))?;
-    let package_hash_info: Hashes = JsonStorage::from_str_to(&hashes_str)
-        .map_err(|e| ClientError::Core(CoreError::InvalidPackage(format!("{pkg} has invalid hashes.json: {e}"))))?;
+    let package_info_str = read_file_from_zip(download_path, "packageInfo.json").map_err(|e| {
+        ClientError::Core(CoreError::InvalidPackage(format!(
+            "{pkg} missing packageInfo.json in zip: {e}"
+        )))
+    })?;
+    let package_info: PackageInfo = JsonStorage::from_str_to(&package_info_str).map_err(|e| {
+        ClientError::Core(CoreError::InvalidPackage(format!(
+            "{pkg} has invalid packageInfo.json: {e}"
+        )))
+    })?;
+    let hashes_str = read_file_from_zip(download_path, "hashes.json").map_err(|e| {
+        ClientError::Core(CoreError::InvalidPackage(format!(
+            "{pkg} missing hashes.json in zip: {e}"
+        )))
+    })?;
+    let package_hash_info: Hashes = JsonStorage::from_str_to(&hashes_str).map_err(|e| {
+        ClientError::Core(CoreError::InvalidPackage(format!(
+            "{pkg} has invalid hashes.json: {e}"
+        )))
+    })?;
 
     let hash = dpm_core::hash_file(download_path)?;
     let expected_hash = repo_package_info.hash.clone().ok_or_else(|| {
