@@ -131,13 +131,14 @@ impl ActionInfo {
     /// instead of four identical copies.
     async fn parsed_packages(
         &self,
+        use_info_db: bool,
     ) -> ClientResult<(Vec<DbPackage>, Vec<ParsedInstallSpec>, Vec<String>)> {
-        let all_packages = self
-            .ctx
-            .db
-            .read_all()
-            .await
-            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
+        let all_packages = if use_info_db {
+            self.ctx.info_db.read_available().await
+        } else {
+            self.ctx.db.read_all().await
+        }
+        .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
         let (is, isnot) = self.parse_mine(&all_packages);
         Ok((all_packages, is, isnot))
     }
@@ -271,6 +272,10 @@ impl ActionInfo {
                 )?;
                 self.ctx
                     .db
+                    .insert(repo_package_info.clone())
+                    .await?;
+                self.ctx
+                    .db
                     .record_installed_files(pkg, &tracked_files)
                     .await?;
 
@@ -286,13 +291,15 @@ impl ActionInfo {
     }
 
     pub async fn install(&self) -> ClientResult<()> {
-        let (all_packages, is, isnot) = self.parsed_packages().await?;
-        self.install_resolved(&all_packages, &is).await?;
+        let (all_packages, is, isnot) = self.parsed_packages(true).await?;
         if !isnot.is_empty() {
-            for pkg in isnot {
-                self.system_action.install_package(&pkg)?;
-            }
+            let pkg = &isnot[0];
+            println!("Error: Package '{}' not found in local cache. Please run 'dpm update' to refresh package index.", pkg);
+            return Err(ClientError::Core(CoreError::PackageNotFound(format!(
+                "Package '{}' not found in local cache. Please run 'dpm update' to refresh package index.", pkg
+            ))));
         }
+        self.install_resolved(&all_packages, &is).await?;
         Ok(())
     }
 
@@ -378,6 +385,10 @@ impl ActionInfo {
             staging.path(),
             &self.system_controller,
         )?;
+        self.ctx
+            .db
+            .insert(repo_package_info.clone())
+            .await?;
         self.ctx
             .db
             .record_installed_files(pkg, &tracked_files)
@@ -596,7 +607,7 @@ impl ActionInfo {
     }
 
     pub async fn uninstall(&self) -> ClientResult<()> {
-        let (_, is, isnot) = self.parsed_packages().await?;
+        let (_, is, isnot) = self.parsed_packages(false).await?;
         if !is.is_empty() {
             for (_, pkg, _) in is {
                 let pre_rm_location = self.ctx.install_dir.join(&pkg);
@@ -636,6 +647,7 @@ impl ActionInfo {
 
                 // 4. Remove manifest rows from DB
                 self.ctx.db.remove_installed_files(&pkg).await?;
+                self.ctx.db.execute_query(&format!("DELETE FROM InstalledPackages WHERE name = '{}'", pkg)).await?;
 
                 if self.verbose {
                     println!("  {}", "Done".green());
@@ -751,7 +763,7 @@ impl ActionInfo {
     }
 
     pub async fn upgrade(&self) -> ClientResult<()> {
-        let (all_packages, is, isnot) = self.parsed_packages().await?;
+        let (all_packages, is, isnot) = self.parsed_packages(true).await?;
         self.install_resolved(&all_packages, &is).await?;
         if !isnot.is_empty() {
             for pkg in isnot {
