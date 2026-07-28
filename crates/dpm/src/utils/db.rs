@@ -93,6 +93,16 @@ impl Db {
             include_str!("../../migrations/0004_package_signatures.down.sql"),
         )
         .map_err(|e| ClientError::Core(IoError(e)))?;
+        std::fs::write(
+            migrations_dir.join("0005_installed_files.up.sql"),
+            include_str!("../../migrations/0005_installed_files.up.sql"),
+        )
+        .map_err(|e| ClientError::Core(IoError(e)))?;
+        std::fs::write(
+            migrations_dir.join("0005_installed_files.down.sql"),
+            include_str!("../../migrations/0005_installed_files.down.sql"),
+        )
+        .map_err(|e| ClientError::Core(IoError(e)))?;
 
         geni::migrate_database(
             format!("sqlite://{}", self.db_path),
@@ -368,5 +378,55 @@ impl Db {
             Some(row) => Ok(Some(Self::row_to_package(row)?)),
             None => Ok(None),
         }
+    }
+
+    /// Record the exact list of linked/installed files for a package in the DB manifest.
+    pub async fn record_installed_files(&self, pkg: &str, files: &[String]) -> ClientResult<()> {
+        let conn = self.connect().await?;
+        let _ = conn
+            .execute("DELETE FROM installed_files WHERE package_name = ?1", [pkg])
+            .await;
+        for file in files {
+            conn.execute(
+                "INSERT INTO installed_files (package_name, file_path) VALUES (?1, ?2)",
+                [pkg, file.as_str()],
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        }
+        Ok(())
+    }
+
+    /// Retrieve the exact list of linked/installed files for a package from DB.
+    pub async fn get_installed_files(&self, pkg: &str) -> ClientResult<Vec<String>> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                "SELECT file_path FROM installed_files WHERE package_name = ?1",
+                [pkg],
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+
+        let mut files = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+        {
+            if let Some(path) = row.get_value(0).ok().and_then(|v| v.as_text().cloned()) {
+                files.push(path);
+            }
+        }
+        Ok(files)
+    }
+
+    /// Remove the installed files manifest for a package from DB.
+    pub async fn remove_installed_files(&self, pkg: &str) -> ClientResult<()> {
+        let conn = self.connect().await?;
+        conn.execute("DELETE FROM installed_files WHERE package_name = ?1", [pkg])
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        Ok(())
     }
 }

@@ -234,7 +234,7 @@ impl ActionInfo {
                     .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
 
                 if matches!(repo_package_info.kind()?, PackageKind::Source { .. }) {
-                    self.install_source_package(pkg, &source_alias, repo_package_info, &staging)?;
+                    self.install_source_package(pkg, &source_alias, repo_package_info, &staging).await?;
                     if self.verbose {
                         println!("  {}", "Installed!".green());
                     }
@@ -259,7 +259,7 @@ impl ActionInfo {
                 unzip_file(&download_path, &extracted)
                     .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
 
-                place_package(
+                let tracked_files = place_package(
                     pkg,
                     &extracted,
                     Some(package_info.file_name.as_str()),
@@ -268,6 +268,8 @@ impl ActionInfo {
                     staging.path(),
                     &self.system_controller,
                 )?;
+                self.ctx.db.record_installed_files(pkg, &tracked_files).await?;
+
                 if self.verbose {
                     println!("  {}", "Installed!".green());
                     println!("  {}", "Successed Create Link!".green());
@@ -302,7 +304,7 @@ impl ActionInfo {
     /// `kind: source` 套件來說,`install_resolved_with_gate` 的簽章閘門目前
     /// 擋不住有 `RepoInfo.json` 寫入權限、但沒有簽名金鑰的攻擊者換掉這裡的
     /// build 指令。
-    fn install_source_package(
+    async fn install_source_package(
         &self,
         pkg: &str,
         source_alias: &str,
@@ -363,7 +365,7 @@ impl ActionInfo {
             )));
         }
 
-        place_package(
+        let tracked_files = place_package(
             pkg,
             &out_dir,
             repo_package_info.entry.as_deref(),
@@ -371,7 +373,8 @@ impl ActionInfo {
             &self.ctx.bin_dir,
             staging.path(),
             &self.system_controller,
-        )
+        )?;
+        self.ctx.db.record_installed_files(pkg, &tracked_files).await
     }
 
     /// 抓某一個來源的完整索引,清空該來源在本地 DB 的舊資料,把每個套件的每個
@@ -588,41 +591,31 @@ impl ActionInfo {
                     println!("{}\n\n  {}", pkg.on_green(), "Removing...".red());
                 }
 
+                // 1. O(1) DB Manifest Cleanup: remove every file/symlink registered in DB
+                let recorded_files = self.ctx.db.get_installed_files(&pkg).await.unwrap_or_default();
+                for file_path in recorded_files {
+                    let p = Path::new(&file_path);
+                    if p.exists() || p.symlink_metadata().is_ok() {
+                        let _ = remove_file(p).or_else(|_| remove_dir_all(p));
+                    }
+                }
+
+                // 2. Remove main install dir Software/<pkg> & opt/<pkg>
                 if opt_link.exists() || opt_link.symlink_metadata().is_ok() {
                     let _ = remove_file(&opt_link);
                 }
-
                 if pre_rm_location.exists() {
                     let _ = remove_dir_all(&pre_rm_location);
                 }
 
-                let env_dirs = [
-                    self.ctx.bin_dir.clone(),
-                    self.ctx.sbin_dir(),
-                    self.ctx.lib_dir(),
-                    self.ctx.include_dir(),
-                    self.ctx.share_dir(),
-                    self.ctx.completions_dir(),
-                    self.ctx.docs_dir(),
-                    self.ctx.etc_dir(),
-                    self.ctx.var_dir(),
-                ];
-
-                for env_dir in env_dirs {
-                    let direct_link = env_dir.join(&pkg);
-                    if direct_link.exists() || direct_link.symlink_metadata().is_ok() {
-                        let _ = remove_file(&direct_link);
-                    }
-                    if let Ok(entries) = std::fs::read_dir(&env_dir) {
-                        for entry in entries.flatten() {
-                            if let Ok(target) = std::fs::read_link(entry.path()) {
-                                if target.starts_with(&pre_rm_location) {
-                                    let _ = remove_file(entry.path());
-                                }
-                            }
-                        }
-                    }
+                // 3. Fallback cleanup for direct bin link if present
+                let direct_bin_link = self.ctx.bin_dir.join(&pkg);
+                if direct_bin_link.exists() || direct_bin_link.symlink_metadata().is_ok() {
+                    let _ = remove_file(&direct_bin_link);
                 }
+
+                // 4. Remove manifest rows from DB
+                self.ctx.db.remove_installed_files(&pkg).await?;
 
                 if self.verbose {
                     println!("  {}", "Done".green());

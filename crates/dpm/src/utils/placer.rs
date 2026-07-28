@@ -110,7 +110,8 @@ fn create_relative_or_abs_symlink(target: &Path, link_path: &Path) {
     let _ = std::os::unix::fs::symlink(target, link_path);
 }
 
-fn link_subdirs_to_env(install_path: &Path, main_dir: &Path) {
+fn link_subdirs_to_env(install_path: &Path, main_dir: &Path) -> Vec<String> {
+    let mut tracked = Vec::new();
     let mapping = [
         ("bin", main_dir.join("bin")),
         ("sbin", main_dir.join("sbin")),
@@ -131,10 +132,12 @@ fn link_subdirs_to_env(install_path: &Path, main_dir: &Path) {
                     let file_name = entry.file_name();
                     let link_dest = target_env_dir.join(file_name);
                     create_relative_or_abs_symlink(&entry.path(), &link_dest);
+                    tracked.push(link_dest.display().to_string());
                 }
             }
         }
     }
+    tracked
 }
 
 pub fn place_package(
@@ -145,7 +148,8 @@ pub fn place_package(
     bin_dir: &Path,
     staging_root: &Path,
     system_controller: &SystemController,
-) -> ClientResult<()> {
+) -> ClientResult<Vec<String>> {
+    let mut tracked_files = Vec::new();
     let install_path = install_dir.join(pkg);
     swap_into_install_dir(content_dir, &install_path, staging_root)?;
 
@@ -153,13 +157,15 @@ pub fn place_package(
     let main_dir = install_dir.parent().unwrap_or(install_dir);
     let opt_link = main_dir.join("opt").join(pkg);
     create_relative_or_abs_symlink(&install_path, &opt_link);
+    tracked_files.push(opt_link.display().to_string());
 
     // 2. Link subdirectories (bin, sbin, lib, include, share, completions, docs, etc, var)
-    link_subdirs_to_env(&install_path, main_dir);
+    let sub_links = link_subdirs_to_env(&install_path, main_dir);
+    tracked_files.extend(sub_links);
 
     // 3. Main entry point symlink
     let Some(entry) = entry.filter(|e| !e.is_empty()) else {
-        return Ok(());
+        return Ok(tracked_files);
     };
     if !entry_is_safe(entry) {
         return Err(ClientError::Core(CoreError::InvalidPackage(format!(
@@ -180,7 +186,8 @@ pub fn place_package(
         ],
         "Can't create link",
     )?;
-    Ok(())
+    tracked_files.push(ln_path.display().to_string());
+    Ok(tracked_files)
 }
 
 #[cfg(test)]

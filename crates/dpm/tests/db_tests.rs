@@ -211,4 +211,26 @@ mod db_tests {
         db.drop_table("LocalRepo").await?;
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_record_get_and_remove_installed_files() -> TestResult {
+        let dir = tempdir()?;
+        let db = setup_db(dir.path()).await?;
+
+        let files = vec![
+            "/opt/dpm/opt/hello".to_string(),
+            "/opt/dpm/bin/hello".to_string(),
+            "/opt/dpm/share/man/man1/hello.1".to_string(),
+        ];
+
+        db.record_installed_files("hello", &files).await?;
+
+        let recorded = db.get_installed_files("hello").await?;
+        assert_eq!(recorded.len(), 3);
+        assert!(recorded.contains(&"/opt/dpm/bin/hello".to_string()));
+
+        db.remove_installed_files("hello").await?;
+        assert!(db.get_installed_files("hello").await?.is_empty());
+        Ok(())
+    }
 }
