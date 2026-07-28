@@ -87,9 +87,9 @@ mod config_tests {
         let default_setting = Setting {
             sources: vec![Source {
                 alias: "official".to_string(),
-                repo_url: "https://github.com/Derrick-Program/DPM-Server".to_string(),
+                repo_url: "https://github.com/Derrick-Program/DPM-Workspace".to_string(),
                 repo_info:
-                    "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/RepoInfo.json"
+                    "https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/RepoInfo.json"
                         .to_string(),
             }],
         };

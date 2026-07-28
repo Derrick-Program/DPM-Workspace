@@ -62,10 +62,12 @@
 
 **欄位：**
 - `version`：套件版本。
-- `kind`：`PackageKind::Prebuilt { url, hash, file_name }` 或 `PackageKind::Source { build }`。
+- `kind`：`PackageKind::Prebuilt { builds: Vec<PrebuiltBuild> }`（每組 build 含 `target`/`url`/`hash`/`file_name`，`target: None` 代表任何平台通用）或 `PackageKind::Source { build, hash, supported_targets }`。
 - `dependencies`：可選的依賴列表。
 - `entry`：可選的進入點。
 - `description`：可選的描述。
+- `author`：可選的作者 ID（用於簽章驗證）。
+- `signature`：可選的 ed25519 簽章。
 
 ---
 

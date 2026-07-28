@@ -554,16 +554,16 @@ mod tests {
     #[test]
     fn official_repo_info_url_derives_raw_content_url_from_repo_url() {
         assert_eq!(
-            official_repo_info_url("https://github.com/Derrick-Program/DPM-Server"),
-            "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/RepoInfo.json"
+            official_repo_info_url("https://github.com/Derrick-Program/DPM-Workspace"),
+            "https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/RepoInfo.json"
         );
     }
 
     #[test]
     fn official_key_url_derives_raw_content_url_for_an_author() {
         assert_eq!(
-            official_key_url("https://github.com/Derrick-Program/DPM-Server", "alice"),
-            "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/keys/alice.pub"
+            official_key_url("https://github.com/Derrick-Program/DPM-Workspace", "alice"),
+            "https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/keys/alice.pub"
         );
     }
 

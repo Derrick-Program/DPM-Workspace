@@ -19,7 +19,6 @@ Cargo.lock
 /target
 .DS_Store
 
-# `build`'s local-dev output (zipped packages for manual testing). Publishing
-# no longer hosts binaries in this repo — see fix_add's --url flow — so
-# nothing under here should ever be committed.
-/Repo/
+# The Repo/ directory contains published package archives (.zip) that are
+# served via raw.githubusercontent.com — these MUST be committed so that
+# `dpm install` can fetch them over HTTPS from this mono-repo.
