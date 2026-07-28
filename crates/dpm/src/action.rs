@@ -661,7 +661,7 @@ impl ActionInfo {
         }
         if !isnot.is_empty() {
             for pkg in isnot {
-                println!("==> Host OS Package Manager ({}): Removing '{pkg}'...", self.system_action.manager_name().cyan());
+                println!("==> Host OS Package Manager ({}): Removing '{pkg}'...", self.system_action.primary_manager_name().cyan());
                 self.system_action.uninstall_package(&pkg)?;
             }
         }
@@ -750,7 +750,6 @@ impl ActionInfo {
         }
 
         for q in unmatched_queries {
-            println!("\n==> Host OS Package Manager ({}): Searching for '{q}'...", self.system_action.manager_name().cyan());
             if let Err(e) = self.system_action.search_package(q) {
                 println!("Host OS package search error for '{q}': {e}");
             }
@@ -761,7 +760,6 @@ impl ActionInfo {
 
     pub async fn list(&self, sys: bool) -> ClientResult<()> {
         if sys {
-            println!("==> Host OS Package Manager ({}) Installed Packages:", self.system_action.manager_name().green().bold());
             if let Err(e) = self.system_action.list_packages() {
                 println!("Host OS package list error: {e}");
             }

@@ -176,7 +176,7 @@ impl PackageManager {
 }
 #[derive(Debug)]
 pub struct SystemAction {
-    package_manager: PackageManager,
+    package_managers: Vec<PackageManager>,
     _verbose: bool,
 }
 /// Holds the `Scope` its caller resolved once (from `--system`/no flag) —
@@ -423,66 +423,142 @@ impl SystemController {
 }
 
 impl SystemAction {
-    pub fn manager_name(&self) -> &'static str {
-        self.package_manager.name()
+    pub fn manager_names(&self) -> Vec<&'static str> {
+        self.package_managers.iter().map(|m| m.name()).collect()
     }
+
+    pub fn primary_manager_name(&self) -> &'static str {
+        self.package_managers.first().map(|m| m.name()).unwrap_or("System Package Manager")
+    }
+
     pub fn new(verbose: bool) -> Self {
         Self {
-            package_manager: Self::detect_package_manager(),
+            package_managers: Self::detect_package_managers(),
             _verbose: verbose,
         }
     }
 
-    fn detect_package_manager() -> PackageManager {
+    fn detect_package_managers() -> Vec<PackageManager> {
         let managers = vec![
+            ("brew", PackageManager::Brew),
             ("apt-get", PackageManager::Apt),
             ("dnf", PackageManager::Dnf),
             ("yum", PackageManager::Yum),
             ("pacman", PackageManager::Pacman),
             ("zypper", PackageManager::Zypper),
-            ("brew", PackageManager::Brew),
         ];
+        let mut detected = Vec::new();
         for (command, manager) in managers {
             if Command::new(command).arg("--version").output().is_ok() {
-                return manager;
+                detected.push(manager);
             }
         }
-        PackageManager::Unknown
+        if detected.is_empty() {
+            vec![PackageManager::Unknown]
+        } else {
+            detected
+        }
     }
-    /// Single seam every `SystemAction` method now funnels through, in
-    /// place of six copy-pasted matches on `self.package_manager`. Building
-    /// the command/args table (`PackageManager::command_for`) and running it
-    /// are the same two steps regardless of verb; only the verb and whether
-    /// it takes a package name differ.
-    fn run_verb(&self, verb: Verb, package_name: Option<&str>) -> ClientResult<()> {
-        let (command, mut args) = self.package_manager.command_for(verb)?;
+
+    fn run_verb_for(&self, manager: PackageManager, verb: Verb, package_name: Option<&str>) -> ClientResult<()> {
+        let (command, mut args) = manager.command_for(verb)?;
         if let Some(name) = package_name {
             args.push(name);
         }
         let err = match package_name {
-            Some(name) => format!("Failed to {} package: {name}", verb.description()),
-            None => format!("Failed to {}", verb.description()),
+            Some(name) => format!("Failed to {} package with {}: {name}", verb.description(), manager.name()),
+            None => format!("Failed to {} with {}", verb.description(), manager.name()),
         };
         self.command_runner(command, args, &err)
     }
 
     pub fn install_package(&self, package_name: &str) -> ClientResult<()> {
-        self.run_verb(Verb::Install, Some(package_name))
+        let mut last_err = None;
+        for &pm in &self.package_managers {
+            match self.run_verb_for(pm, Verb::Install, Some(package_name)) {
+                Ok(()) => return Ok(()),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
     }
+
     pub fn update_package_index(&self) -> ClientResult<()> {
-        self.run_verb(Verb::UpdateIndex, None)
+        let mut success = false;
+        let mut last_err = None;
+        for &pm in &self.package_managers {
+            match self.run_verb_for(pm, Verb::UpdateIndex, None) {
+                Ok(()) => success = true,
+                Err(e) => last_err = Some(e),
+            }
+        }
+        if success {
+            Ok(())
+        } else {
+            Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
+        }
     }
+
     pub fn uninstall_package(&self, package_name: &str) -> ClientResult<()> {
-        self.run_verb(Verb::Uninstall, Some(package_name))
+        let mut last_err = None;
+        for &pm in &self.package_managers {
+            match self.run_verb_for(pm, Verb::Uninstall, Some(package_name)) {
+                Ok(()) => return Ok(()),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
     }
+
     pub fn search_package(&self, package_name: &str) -> ClientResult<()> {
-        self.run_verb(Verb::Search, Some(package_name))
+        let mut success = false;
+        let mut last_err = None;
+        for &pm in &self.package_managers {
+            if pm != PackageManager::Unknown {
+                use colored::Colorize;
+                println!("==> Host OS Package Manager ({}): Searching for '{package_name}'...", pm.name().cyan());
+            }
+            match self.run_verb_for(pm, Verb::Search, Some(package_name)) {
+                Ok(()) => success = true,
+                Err(e) => last_err = Some(e),
+            }
+        }
+        if success {
+            Ok(())
+        } else {
+            Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
+        }
     }
+
     pub fn upgrade_package(&self, package_name: &str) -> ClientResult<()> {
-        self.run_verb(Verb::Upgrade, Some(package_name))
+        let mut last_err = None;
+        for &pm in &self.package_managers {
+            match self.run_verb_for(pm, Verb::Upgrade, Some(package_name)) {
+                Ok(()) => return Ok(()),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
     }
+
     pub fn list_packages(&self) -> ClientResult<()> {
-        self.run_verb(Verb::List, None)
+        let mut success = false;
+        let mut last_err = None;
+        for &pm in &self.package_managers {
+            if pm != PackageManager::Unknown {
+                use colored::Colorize;
+                println!("==> Host OS Package Manager ({}) Installed Packages:", pm.name().green().bold());
+            }
+            match self.run_verb_for(pm, Verb::List, None) {
+                Ok(()) => success = true,
+                Err(e) => last_err = Some(e),
+            }
+        }
+        if success {
+            Ok(())
+        } else {
+            Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
+        }
     }
 
     fn command_runner(
@@ -644,7 +720,7 @@ mod tests {
     #[test]
     fn system_action_unknown_manager_methods_return_error() {
         let action = SystemAction {
-            package_manager: PackageManager::Unknown,
+            package_managers: vec![PackageManager::Unknown],
             _verbose: false,
         };
         assert!(action.install_package("foo").is_err());
