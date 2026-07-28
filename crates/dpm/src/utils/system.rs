@@ -38,9 +38,9 @@ fn raw_content_url(repo_url: &str, path: &str) -> String {
 }
 
 /// 把 `https://github.com/<owner>/<repo>` 轉成該 repo 在 `main` 分支上
-/// `RepoInfo.json` 的 raw content URL。
+/// `RepoInfo.db` 的 raw content URL。
 fn official_repo_info_url(repo_url: &str) -> String {
-    raw_content_url(repo_url, "RepoInfo.json")
+    raw_content_url(repo_url, "RepoInfo.db")
 }
 
 /// 把 `https://github.com/<owner>/<repo>` 轉成該 repo 在 `main` 分支上
@@ -573,7 +573,7 @@ mod tests {
     fn official_repo_info_url_derives_raw_content_url_from_repo_url() {
         assert_eq!(
             official_repo_info_url("https://github.com/Derrick-Program/DPM-Workspace"),
-            "https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/RepoInfo.json"
+            "https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/RepoInfo.db"
         );
     }
 

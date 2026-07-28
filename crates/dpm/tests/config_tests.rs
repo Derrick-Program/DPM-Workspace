@@ -9,7 +9,7 @@ mod config_tests {
                 alias: "official".to_string(),
                 repo_url: "https://github.com/Derrick-Program/DPM-Workspace".to_string(),
                 repo_info:
-                    "https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/RepoInfo.json"
+                    "https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/RepoInfo.db"
                         .to_string(),
             }],
         };
@@ -52,7 +52,7 @@ mod config_tests {
                 alias: "official".to_string(),
                 repo_url: "https://github.com/Derrick-Program/DPM-Workspace".to_string(),
                 repo_info:
-                    "https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/RepoInfo.json"
+                    "https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/RepoInfo.db"
                         .to_string(),
             }],
         };
@@ -89,7 +89,7 @@ mod config_tests {
                 alias: "official".to_string(),
                 repo_url: "https://github.com/Derrick-Program/DPM-Workspace".to_string(),
                 repo_info:
-                    "https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/RepoInfo.json"
+                    "https://raw.githubusercontent.com/Derrick-Program/DPM-Workspace/main/crates/dpm-server/RepoInfo.db"
                         .to_string(),
             }],
         };
