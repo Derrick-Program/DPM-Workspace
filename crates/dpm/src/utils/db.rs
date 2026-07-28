@@ -1,7 +1,10 @@
 use super::{ClientError, ClientResult, DbPackage};
 use dpm_core::CoreError::*;
 use fs2::FileExt;
+use include_dir::{include_dir, Dir};
 use std::{fs::File, path::Path};
+
+static MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
 /// Single source of truth for the `LocalRepo` column list — every query below
 /// builds its SELECT/INSERT column list from this, and `row_to_package` looks
@@ -53,56 +56,10 @@ impl Db {
             .ok_or_else(|| ClientError::SystemError("invalid database path".to_string()))?
             .join("migrations");
         std::fs::create_dir_all(&migrations_dir).map_err(|e| ClientError::Core(IoError(e)))?;
-        std::fs::write(
-            migrations_dir.join("0001_init.up.sql"),
-            include_str!("../../migrations/0001_init.up.sql"),
-        )
-        .map_err(|e| ClientError::Core(IoError(e)))?;
-        std::fs::write(
-            migrations_dir.join("0001_init.down.sql"),
-            include_str!("../../migrations/0001_init.down.sql"),
-        )
-        .map_err(|e| ClientError::Core(IoError(e)))?;
-        std::fs::write(
-            migrations_dir.join("0002_multi_source.up.sql"),
-            include_str!("../../migrations/0002_multi_source.up.sql"),
-        )
-        .map_err(|e| ClientError::Core(IoError(e)))?;
-        std::fs::write(
-            migrations_dir.join("0002_multi_source.down.sql"),
-            include_str!("../../migrations/0002_multi_source.down.sql"),
-        )
-        .map_err(|e| ClientError::Core(IoError(e)))?;
-        std::fs::write(
-            migrations_dir.join("0003_nullable_entry.up.sql"),
-            include_str!("../../migrations/0003_nullable_entry.up.sql"),
-        )
-        .map_err(|e| ClientError::Core(IoError(e)))?;
-        std::fs::write(
-            migrations_dir.join("0003_nullable_entry.down.sql"),
-            include_str!("../../migrations/0003_nullable_entry.down.sql"),
-        )
-        .map_err(|e| ClientError::Core(IoError(e)))?;
-        std::fs::write(
-            migrations_dir.join("0004_package_signatures.up.sql"),
-            include_str!("../../migrations/0004_package_signatures.up.sql"),
-        )
-        .map_err(|e| ClientError::Core(IoError(e)))?;
-        std::fs::write(
-            migrations_dir.join("0004_package_signatures.down.sql"),
-            include_str!("../../migrations/0004_package_signatures.down.sql"),
-        )
-        .map_err(|e| ClientError::Core(IoError(e)))?;
-        std::fs::write(
-            migrations_dir.join("0005_installed_files.up.sql"),
-            include_str!("../../migrations/0005_installed_files.up.sql"),
-        )
-        .map_err(|e| ClientError::Core(IoError(e)))?;
-        std::fs::write(
-            migrations_dir.join("0005_installed_files.down.sql"),
-            include_str!("../../migrations/0005_installed_files.down.sql"),
-        )
-        .map_err(|e| ClientError::Core(IoError(e)))?;
+
+        MIGRATIONS_DIR
+            .extract(&migrations_dir)
+            .map_err(|e| ClientError::Core(IoError(e)))?;
 
         geni::migrate_database(
             format!("sqlite://{}", self.db_path),

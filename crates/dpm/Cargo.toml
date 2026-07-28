@@ -21,6 +21,7 @@ fs2 = "0.4.3"
 futures-util.workspace = true
 geni = "1.3.3"
 git2 = { version = "0.18.1", features = ["vendored-openssl", "vendored-libgit2"] }
+include_dir = "0.7.4"
 libc = "0.2.153"
 pubgrub = "0.4"
 reqwest.workspace = true
