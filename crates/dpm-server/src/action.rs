@@ -117,6 +117,9 @@ pub fn hash(obj: &Hash, project_src: &Path, repo_dir: &Path) -> ServerResult<()>
 
     let mut package_info: PackageInfo = JsonStorage::from_json(project_info)?;
     package_info.hash = hash;
+    if let Some(cmd) = &obj.build {
+        package_info.build_command = Some(cmd.clone());
+    }
     JsonStorage::to_json(&package_info, project_info)?;
     Ok(())
 }
@@ -399,22 +402,26 @@ async fn fix_add(
             }
         }
         AddKind::Build { build, targets } => {
-            // Same check as the Url arm above, mirrored for source packages:
-            // recompute the hash this `--build` value would produce and
-            // compare it against the signed hash, so someone with
-            // RepoInfo.db write access (but no signing key) can't swap the
-            // build command out from under an already-signed packageInfo.json.
+            let effective_build = match build {
+                Some(cmd) if !cmd.trim().is_empty() => cmd.clone(),
+                _ => pk_info.build_command.clone().ok_or_else(|| {
+                    ServerError::ValidationError(
+                        "build command not specified and not found in packageInfo.json — pass build command or run 'dpm-server hash <name> --build \"<cmd>\"' first".to_string()
+                    )
+                })?,
+            };
+
             let commit = source_repo_commit_hash(&path)?;
-            let recomputed_hash = dpm_core::hash_bytes(format!("{build}\n{commit}").as_bytes());
+            let recomputed_hash = dpm_core::hash_bytes(format!("{effective_build}\n{commit}").as_bytes());
             if recomputed_hash != pk_info.hash {
                 return Err(ServerError::ValidationError(format!(
-                    "build command {build:?} (hash {recomputed_hash}) does not match {}'s signed hash ({}) — run `dpm-server hash --build`/`sign` again after the build command changes",
+                    "build command {effective_build:?} (hash {recomputed_hash}) does not match {}'s signed hash ({}) — run `dpm-server hash --build`/`sign` again after the build command changes",
                     obj.project_name, pk_info.hash
                 )));
             }
 
             PackageKind::Source {
-                build: build.clone(),
+                build: effective_build,
                 hash: Some(pk_info.hash.clone()),
                 supported_targets: targets.clone(),
             }
@@ -692,7 +699,7 @@ mod tests {
             &Add {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
-                    build: "v1 build".to_string(),
+                    build: Some("v1 build".to_string()),
                     targets: None,
                 },
             },
@@ -739,7 +746,7 @@ mod tests {
             &Add {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
-                    build: "v2 build".to_string(),
+                    build: Some("v2 build".to_string()),
                     targets: None,
                 },
             },
@@ -781,7 +788,7 @@ mod tests {
             &Add {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
-                    build: "v1 build".to_string(),
+                    build: Some("v1 build".to_string()),
                     targets: None,
                 },
             },
@@ -819,7 +826,7 @@ mod tests {
             &Add {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
-                    build: "v2 build".to_string(),
+                    build: Some("v2 build".to_string()),
                     targets: None,
                 },
             },
@@ -871,7 +878,7 @@ mod tests {
             &Add {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
-                    build: "cargo build".to_string(),
+                    build: Some("cargo build".to_string()),
                     targets: None,
                 },
             },
@@ -1114,7 +1121,7 @@ mod tests {
         let add = Add {
             project_name: "demo-pkg".to_string(),
             kind: AddKind::Build {
-                build: "cargo build --release".to_string(),
+                build: Some("cargo build --release".to_string()),
                 targets: None,
             },
         };
@@ -1138,6 +1145,50 @@ mod tests {
         assert_eq!(kind, "source");
         assert_eq!(build_command.unwrap(), "cargo build --release");
         assert!(hash.is_some());
+
+        std::fs::remove_dir_all(&project_src).ok();
+    }
+
+    #[tokio::test]
+    async fn fix_add_build_variant_defaults_to_package_info_build_command_when_none() {
+        let project_src = std::env::temp_dir().join(format!(
+            "dpm-server-fix-add-build-fallback-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project_src).unwrap();
+        let keys_dir = project_src.join("keys");
+        init_git_repo(&project_src);
+        init_hash_sign_for_build(
+            &project_src,
+            &keys_dir,
+            "demo-pkg",
+            "alice",
+            "cargo build --release",
+        );
+
+        let (_td, conn) = create_test_db(&project_src).await;
+        let add = Add {
+            project_name: "demo-pkg".to_string(),
+            kind: AddKind::Build {
+                build: None,
+                targets: None,
+            },
+        };
+        fix_add(&add, &conn, &project_src, &keys_dir).await.unwrap();
+
+        let mut rows = conn
+            .query("SELECT kind, build_command FROM Packages WHERE name = 'demo-pkg' LIMIT 1", ())
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let kind: String = row.get_value(0).unwrap().as_text().unwrap().to_string();
+        let build_command: String = row.get_value(1).unwrap().as_text().unwrap().to_string();
+        assert_eq!(kind, "source");
+        assert_eq!(build_command, "cargo build --release");
 
         std::fs::remove_dir_all(&project_src).ok();
     }
@@ -1168,7 +1219,7 @@ mod tests {
             &Add {
                 project_name: "demo-pkg".to_string(),
                 kind: AddKind::Build {
-                    build: "cargo build --release --features malicious".to_string(),
+                    build: Some("cargo build --release --features malicious".to_string()),
                     targets: None,
                 },
             },

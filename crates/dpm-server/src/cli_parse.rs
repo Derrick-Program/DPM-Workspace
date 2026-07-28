@@ -105,8 +105,8 @@ pub enum AddKind {
     Build {
         /// Shell command clients run locally to build this package from
         /// source. $OUT will point at the install destination when clients
-        /// actually run it (Phase 4 client-side work).
-        build: String,
+        /// actually run it. Omit to automatically use the build_command stored in packageInfo.json.
+        build: Option<String>,
         /// Comma-separated list of Rust target triples this package
         /// supports (e.g. aarch64-apple-darwin,x86_64-unknown-linux-gnu).
         /// Omit to allow installing on any platform. The build command

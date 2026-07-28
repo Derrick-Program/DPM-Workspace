@@ -168,6 +168,9 @@ pub struct PackageInfo {
     /// `None`,只有 `sign` 這一個指令會寫入。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// `kind: source` 套件的本機編譯指令 (用於發布時自動提供給 `fix add build`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_command: Option<String>,
 }
 
 impl PackageInfo {
@@ -202,6 +205,7 @@ impl PackageInfo {
             dependencies,
             author,
             signature: None,
+            build_command: None,
         }
     }
 }
