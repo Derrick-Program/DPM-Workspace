@@ -247,13 +247,19 @@ where
     /// # 回傳
     /// 回傳載入的資料或錯誤
     pub async fn from_url(url: &str) -> CoreResult<T> {
-        let response = reqwest::get(url)
-            .await
-            .map_err(|e| CoreError::NetworkError(e.to_string()))?
-            .text()
-            .await
-            .map_err(|e| CoreError::NetworkError(e.to_string()))?;
-        let repo_info: T = serde_json::from_str(&response)?;
+        let file_contents = if let Some(path_str) = url.strip_prefix("file://") {
+            std::fs::read_to_string(path_str).map_err(CoreError::IoError)?
+        } else if std::path::Path::new(url).exists() {
+            std::fs::read_to_string(url).map_err(CoreError::IoError)?
+        } else {
+            reqwest::get(url)
+                .await
+                .map_err(|e| CoreError::NetworkError(e.to_string()))?
+                .text()
+                .await
+                .map_err(|e| CoreError::NetworkError(e.to_string()))?
+        };
+        let repo_info: T = serde_json::from_str(&file_contents)?;
         Ok(repo_info)
     }
     /// 從字串反序列化 JSON 資料

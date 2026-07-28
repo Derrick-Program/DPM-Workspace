@@ -45,15 +45,26 @@ async fn verify_official_signature(
     dpm_core::validate_author_id(author)?;
     if !key_cache.contains_key(author) {
         let key_url = official_key_url(repo_url, author);
-        let response = reqwest::get(&key_url)
-            .await
-            .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?
-            .error_for_status()
-            .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?;
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?;
+        let bytes = if let Some(path_str) = key_url.strip_prefix("file://") {
+            tokio::fs::read(path_str)
+                .await
+                .map_err(|e| ClientError::Core(CoreError::IoError(e)))?
+        } else if std::path::Path::new(&key_url).exists() {
+            tokio::fs::read(&key_url)
+                .await
+                .map_err(|e| ClientError::Core(CoreError::IoError(e)))?
+        } else {
+            let response = reqwest::get(&key_url)
+                .await
+                .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?
+                .error_for_status()
+                .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?;
+            response
+                .bytes()
+                .await
+                .map_err(|e| ClientError::Core(CoreError::NetworkError(e.to_string())))?
+                .to_vec()
+        };
         let verifying_key = dpm_core::verifying_key_from_bytes(bytes.as_ref())?;
         key_cache.insert(author.to_string(), verifying_key);
     }

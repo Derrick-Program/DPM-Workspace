@@ -18,14 +18,21 @@ pub(crate) const OFFICIAL_REPO_URL: &str = "https://github.com/Derrick-Program/D
 /// 檔案路徑的 raw content URL。`official_repo_info_url`/`official_key_url`
 /// 共用這個轉換,只差要抓的路徑。
 fn raw_content_url(repo_url: &str, path: &str) -> String {
-    format!(
-        "{}/main/{path}",
-        repo_url.replacen(
-            "https://github.com/",
-            "https://raw.githubusercontent.com/",
-            1
+    if let Some(base_path) = repo_url.strip_prefix("file://") {
+        let full = Path::new(base_path).join(path);
+        format!("file://{}", full.display())
+    } else if Path::new(repo_url).exists() {
+        Path::new(repo_url).join(path).display().to_string()
+    } else {
+        format!(
+            "{}/main/{path}",
+            repo_url.replacen(
+                "https://github.com/",
+                "https://raw.githubusercontent.com/",
+                1
+            )
         )
-    )
+    }
 }
 
 /// 把 `https://github.com/<owner>/<repo>` 轉成該 repo 在 `main` 分支上
@@ -205,9 +212,9 @@ impl SystemController {
             .ok_or_else(|| {
                 ClientError::SystemError("Could not get current username".to_string())
             })?;
-        let main_dir_str = main_dir
-            .to_str()
-            .ok_or_else(|| ClientError::SystemError("Invalid UTF-8 in main_dir path".to_string()))?;
+        let main_dir_str = main_dir.to_str().ok_or_else(|| {
+            ClientError::SystemError("Invalid UTF-8 in main_dir path".to_string())
+        })?;
         if cfg!(target_os = "linux") {
             self.system_command_runner(
                 "chown",
@@ -217,11 +224,7 @@ impl SystemController {
         } else if cfg!(target_os = "macos") {
             self.system_command_runner(
                 "chown",
-                vec![
-                    "-R",
-                    format!("{}:admin", username).as_str(),
-                    main_dir_str,
-                ],
+                vec!["-R", format!("{}:admin", username).as_str(), main_dir_str],
                 "Can't run chown",
             )?;
         }
@@ -282,10 +285,9 @@ impl SystemController {
     /// ownership. Shared by `init_first_run`/`init_existing` — bootstrap
     /// happens either way, only what's done with `config.toml` differs.
     fn bootstrap_dirs(&self, ctx: &Context) -> ClientResult<()> {
-        let install_dir_str = ctx
-            .install_dir
-            .to_str()
-            .ok_or_else(|| ClientError::SystemError("Invalid UTF-8 in install_dir path".to_string()))?;
+        let install_dir_str = ctx.install_dir.to_str().ok_or_else(|| {
+            ClientError::SystemError("Invalid UTF-8 in install_dir path".to_string())
+        })?;
         self.system_command_runner(
             "mkdir",
             vec!["-p", install_dir_str],
@@ -309,11 +311,7 @@ impl SystemController {
             .bin_dir
             .to_str()
             .ok_or_else(|| ClientError::SystemError("Invalid UTF-8 in bin_dir path".to_string()))?;
-        self.system_command_runner(
-            "mkdir",
-            vec!["-p", bin_dir_str],
-            "Can't create bin dir",
-        )?;
+        self.system_command_runner("mkdir", vec!["-p", bin_dir_str], "Can't create bin dir")?;
         self.permision_check(&ctx.main_dir)
     }
 

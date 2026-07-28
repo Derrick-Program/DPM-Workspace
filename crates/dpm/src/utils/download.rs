@@ -10,6 +10,22 @@ use tokio::io::AsyncWriteExt;
 /// URL up from the database first; the download itself never touched DB
 /// state, so it didn't belong behind `Db`'s interface.
 pub async fn download_file(url: &str, dest_path: &Path) -> ClientResult<()> {
+    let local_src = if let Some(path_str) = url.strip_prefix("file://") {
+        Some(Path::new(path_str))
+    } else if Path::new(url).exists() {
+        Some(Path::new(url))
+    } else {
+        None
+    };
+
+    if let Some(src) = local_src {
+        tokio::fs::copy(src, dest_path)
+            .await
+            .map_err(|e| ClientError::Core(IoError(e)))?;
+        println!("File copied to: {}", dest_path.display());
+        return Ok(());
+    }
+
     let req = reqwest::get(url)
         .await
         .map_err(|e| ClientError::Core(NetworkError(e.to_string())))?;
