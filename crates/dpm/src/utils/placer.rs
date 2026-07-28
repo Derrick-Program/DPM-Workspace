@@ -110,28 +110,35 @@ fn create_relative_or_abs_symlink(target: &Path, link_path: &Path) {
     let _ = std::os::unix::fs::symlink(target, link_path);
 }
 
-fn link_subdirs_to_env(install_path: &Path, main_dir: &Path) -> Vec<String> {
+fn link_subdirs_to_env(pkg: &str, install_path: &Path, main_dir: &Path) -> Vec<String> {
     let mut tracked = Vec::new();
     let mapping = [
-        ("bin", main_dir.join("bin")),
-        ("sbin", main_dir.join("sbin")),
-        ("lib", main_dir.join("lib")),
-        ("include", main_dir.join("include")),
-        ("share", main_dir.join("share")),
-        ("completions", main_dir.join("completions")),
-        ("docs", main_dir.join("docs")),
-        ("etc", main_dir.join("etc")),
-        ("var", main_dir.join("var")),
+        ("bin", main_dir.join("bin"), false),
+        ("sbin", main_dir.join("sbin"), false),
+        ("lib", main_dir.join("lib"), false),
+        ("include", main_dir.join("include"), false),
+        ("share", main_dir.join("share"), true),
+        ("completions", main_dir.join("completions"), false),
+        ("docs", main_dir.join("docs"), true),
+        ("etc", main_dir.join("etc"), true),
+        ("var", main_dir.join("var"), true),
     ];
 
-    for (sub_name, target_env_dir) in mapping {
+    for (sub_name, target_env_dir, is_namespaced) in mapping {
         let pkg_subdir = install_path.join(sub_name);
         if pkg_subdir.exists() && pkg_subdir.is_dir() {
             if let Ok(entries) = fs::read_dir(&pkg_subdir) {
                 for entry in entries.flatten() {
                     let file_name = entry.file_name();
-                    let link_dest = target_env_dir.join(file_name);
-                    create_relative_or_abs_symlink(&entry.path(), &link_dest);
+                    let entry_path = entry.path();
+                    let link_dest = if is_namespaced && entry_path.is_file() {
+                        let pkg_dest_dir = target_env_dir.join(pkg);
+                        let _ = fs::create_dir_all(&pkg_dest_dir);
+                        pkg_dest_dir.join(file_name)
+                    } else {
+                        target_env_dir.join(file_name)
+                    };
+                    create_relative_or_abs_symlink(&entry_path, &link_dest);
                     tracked.push(link_dest.display().to_string());
                 }
             }
@@ -160,7 +167,7 @@ pub fn place_package(
     tracked_files.push(opt_link.display().to_string());
 
     // 2. Link subdirectories (bin, sbin, lib, include, share, completions, docs, etc, var)
-    let sub_links = link_subdirs_to_env(&install_path, main_dir);
+    let sub_links = link_subdirs_to_env(pkg, &install_path, main_dir);
     tracked_files.extend(sub_links);
 
     // 3. Main entry point symlink
@@ -302,6 +309,45 @@ mod tests {
 
         let linked_inc = include_dir.join("test.h");
         assert!(linked_inc.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn place_package_namespaces_share_files_and_ignores_missing_dirs() {
+        let root = tempdir().unwrap();
+        let main_dir = root.path().join("main");
+        let install_dir = main_dir.join("Software");
+        let bin_dir = main_dir.join("bin");
+        let opt_dir = main_dir.join("opt");
+        let share_dir = main_dir.join("share");
+
+        for d in [&main_dir, &install_dir, &bin_dir, &opt_dir, &share_dir] {
+            fs::create_dir_all(d).unwrap();
+        }
+
+        let content_dir = root.path().join("content");
+        fs::create_dir_all(content_dir.join("share")).unwrap();
+        fs::write(content_dir.join("share").join("readme.md"), b"hello docs").unwrap();
+
+        let controller = SystemController::new(Scope::PerUser);
+        let tracked = place_package(
+            "hello",
+            &content_dir,
+            None,
+            &install_dir,
+            &bin_dir,
+            root.path(),
+            &controller,
+        )
+        .unwrap();
+
+        // 1. Verify share/hello/readme.md exists and is a symlink
+        let namespaced_doc = share_dir.join("hello").join("readme.md");
+        assert!(namespaced_doc.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(tracked.contains(&namespaced_doc.display().to_string()));
+
+        // 2. Verify non-existent package subdirectories (e.g. sbin, etc) were ignored
+        assert!(!main_dir.join("sbin").join("hello").exists());
+        assert!(!main_dir.join("etc").join("hello").exists());
     }
 
     #[test]
