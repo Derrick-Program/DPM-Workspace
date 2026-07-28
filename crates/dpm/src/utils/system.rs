@@ -166,7 +166,7 @@ impl PackageManager {
 #[derive(Debug)]
 pub struct SystemAction {
     package_manager: PackageManager,
-    verbose: bool,
+    _verbose: bool,
 }
 /// Holds the `Scope` its caller resolved once (from `--system`/no flag) —
 /// replaces reading a process-wide `SCOPE: OnceLock<Scope>` global from
@@ -415,7 +415,7 @@ impl SystemAction {
     pub fn new(verbose: bool) -> Self {
         Self {
             package_manager: Self::detect_package_manager(),
-            verbose,
+            _verbose: verbose,
         }
     }
 
@@ -485,13 +485,8 @@ impl SystemAction {
             Command::new(command)
         };
 
-        if self.verbose {
-            cmd.stdout(Stdio::inherit());
-            cmd.stderr(Stdio::inherit());
-        } else {
-            cmd.stdout(Stdio::null());
-            cmd.stderr(Stdio::null());
-        }
+        cmd.stdout(Stdio::inherit());
+        cmd.stderr(Stdio::inherit());
 
         cmd.args(&args);
 
@@ -636,7 +631,7 @@ mod tests {
     fn system_action_unknown_manager_methods_return_error() {
         let action = SystemAction {
             package_manager: PackageManager::Unknown,
-            verbose: false,
+            _verbose: false,
         };
         assert!(action.install_package("foo").is_err());
         assert!(action.update_package_index().is_err());

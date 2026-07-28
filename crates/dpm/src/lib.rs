@@ -95,7 +95,7 @@ pub async fn entry(ctx: Context, config: Cli) -> ClientResult<()> {
             if list_sys_installed {
                 info.list(true).await?;
             }
-            if list_installed {
+            if list_installed || !list_sys_installed {
                 info.list(false).await?;
             }
         }

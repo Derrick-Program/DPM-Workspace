@@ -65,7 +65,7 @@ pub enum Commands {
         verbose: bool,
     },
     /// List can install Package
-    #[command(visible_aliases = ["l", "li", "ll"], arg_required_else_help = true)]
+    #[command(visible_aliases = ["l", "li", "ll"])]
     List {
         #[arg(short, long)]
         verbose: bool,

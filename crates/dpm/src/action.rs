@@ -594,12 +594,13 @@ impl ActionInfo {
                 println!("{}", "Source removed.".green());
             }
             SourceAction::List => {
-                // The merged (system < user < env) view, not the user-tier-only
-                // `setting` that Add/Remove mutate — `list` should show what's
-                // actually in effect, including system-tier sources this user
-                // can't (and shouldn't) edit.
-                for source in &self.setting_config.sources {
-                    println!("{}  {}", source.alias.green(), source.repo_info);
+                if self.setting_config.sources.is_empty() {
+                    println!("{}", "No package sources currently configured.".yellow());
+                } else {
+                    println!("{}", "Configured Package Sources:".green().bold());
+                    for source in &self.setting_config.sources {
+                        println!("  {}  {}", source.alias.green(), source.repo_info);
+                    }
                 }
             }
         }
@@ -608,6 +609,10 @@ impl ActionInfo {
 
     pub async fn uninstall(&self) -> ClientResult<()> {
         let (_, is, isnot) = self.parsed_packages(false).await?;
+        if is.is_empty() && isnot.is_empty() {
+            println!("{}", "No matching installed packages found to uninstall.".yellow());
+            return Ok(());
+        }
         if !is.is_empty() {
             for (_, pkg, _) in is {
                 let pre_rm_location = self.ctx.install_dir.join(&pkg);
@@ -689,7 +694,7 @@ impl ActionInfo {
                     );
                 }
             } else {
-                println!("No packages found in local DPM index. Run `dpm update` to fetch index.");
+                println!("{}", "No packages found in local DPM index. Run `dpm update` to refresh package index.".yellow());
             }
             return Ok(());
         }
@@ -739,6 +744,8 @@ impl ActionInfo {
                     desc
                 );
             }
+        } else {
+            println!("{}", "No matching packages found in DPM index.".yellow());
         }
 
         for q in unmatched_queries {
@@ -753,10 +760,19 @@ impl ActionInfo {
 
     pub async fn list(&self, sys: bool) -> ClientResult<()> {
         if sys {
-            self.system_action.list_packages()?;
+            println!("{}", "System Package Listing:".green().bold());
+            if let Err(e) = self.system_action.list_packages() {
+                println!("System package list error: {e}");
+            }
         } else {
-            for pkg in installed_package_names(&self.ctx.install_dir)? {
-                println!("{}", pkg.green());
+            let pkgs = installed_package_names(&self.ctx.install_dir)?;
+            if pkgs.is_empty() {
+                println!("{}", "No packages currently installed.".yellow());
+            } else {
+                println!("{}", "Installed DPM Packages:".green().bold());
+                for pkg in pkgs {
+                    println!("  {}", pkg.green());
+                }
             }
         }
         Ok(())
@@ -764,6 +780,10 @@ impl ActionInfo {
 
     pub async fn upgrade(&self) -> ClientResult<()> {
         let (all_packages, is, isnot) = self.parsed_packages(true).await?;
+        if is.is_empty() && isnot.is_empty() {
+            println!("{}", "No packages available for upgrade.".yellow());
+            return Ok(());
+        }
         self.install_resolved(&all_packages, &is).await?;
         if !isnot.is_empty() {
             for pkg in isnot {
