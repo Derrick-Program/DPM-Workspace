@@ -102,21 +102,25 @@ cargo run -p DPM-Server -- sign <pkg_name>
 
 #### 4. 校驗並寫入 SQLite 索引庫 (`fix add build`)
 ```bash
+# 自動讀取 packageInfo.json 中的 build_command (無需重複輸入指令)
+cargo run -p DPM-Server -- fix add <pkg_name> build [--targets "<comma_separated_targets>"]
+
+# 或亦可手動指定編譯指令：
 cargo run -p DPM-Server -- fix add <pkg_name> build "<build_command>" [--targets "<comma_separated_targets>"]
 ```
-* 例如：`cargo run -p DPM-Server -- fix add addsub build "cc -dynamiclib -o \$OUT/libaddsub.dylib src/addsub.c" --targets "aarch64-apple-darwin,x86_64-unknown-linux-gnu"`
+* 例如：`cargo run -p DPM-Server -- fix add addsub build --targets "aarch64-apple-darwin,x86_64-unknown-linux-gnu"`
 * 自動讀取 `keys/<author_id>.pub` 驗證簽章，通過後寫入 `RepoInfo.db`。
 
 ---
 
 ## 📊 發布流程速查表 (Cheat Sheet)
 
-| 步驟 | 預建二進位包 (Prebuilt Zip) | 原始碼編譯包 (Source Package) |
+| 步驟 | 預建二進位包 (Prebuilt Zip) | 原始碼編譯包 (Source Package) ⭐ |
 | :--- | :--- | :--- |
 | **1. 專案準備** | `build <pkg>` (產生 `.zip`) | 準備 `src/` 原始碼 |
 | **2. 計算雜湊** | `hash <pkg>` | `hash <pkg> --build "<CMD>"` |
 | **3. 數位簽署** | `sign <pkg>` | `sign <pkg>` |
-| **4. 匯入 DB** | `fix add <pkg> url <URL> [--target <T>]` | `fix add <pkg> build "<CMD>" [--targets <T1,T2>]` |
+| **4. 匯入 DB** | `fix add <pkg> url <URL> [--target <T>]` | `fix add <pkg> build [<CMD>] [--targets <T1,T2>]` |
 
 ---
 
