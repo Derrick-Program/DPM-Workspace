@@ -29,6 +29,7 @@ pub struct Context {
     pub install_dir: PathBuf,
     pub config_dir: PathBuf,
     pub db: Arc<Db>,
+    pub info_db: Arc<Db>,
 }
 
 struct Paths {
@@ -67,13 +68,14 @@ fn compute_paths(scope: Scope) -> ClientResult<Paths> {
     }
 }
 
-async fn open_db(main_dir: &std::path::Path) -> ClientResult<Db> {
-    let db_path = main_dir.join("LocalRepo.db");
-    let lock_path = main_dir.join("LocalRepo.lock");
+async fn open_db(main_dir: &std::path::Path, is_info: bool) -> ClientResult<Db> {
+    let name = if is_info { "LocalRepoInfo" } else { "LocalRepo" };
+    let db_path = main_dir.join(format!("{name}.db"));
+    let lock_path = main_dir.join(format!("{name}.lock"));
     let db = Db::new(db_path.to_str().unwrap(), lock_path.to_str().unwrap())
         .await
         .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
-    db.run_migrations().await?;
+    db.run_migrations(is_info).await?;
     Ok(db)
 }
 
@@ -121,7 +123,8 @@ impl Context {
             )?;
             controller.permision_check(&paths.main_dir)?;
         }
-        let db = open_db(&paths.main_dir).await?;
+        let db = open_db(&paths.main_dir, false).await?;
+        let info_db = open_db(&paths.main_dir, true).await?;
         Ok(Context {
             scope,
             main_dir: paths.main_dir,
@@ -129,7 +132,12 @@ impl Context {
             install_dir: paths.install_dir,
             config_dir: paths.config_dir,
             db: Arc::new(db),
+            info_db: Arc::new(info_db),
         })
+    }
+
+    pub async fn open_info_db(&self) -> ClientResult<Db> {
+        open_db(&self.main_dir, true).await
     }
 
     /// Test constructor: every path lives under `root` (a caller-owned
@@ -167,7 +175,8 @@ impl Context {
             std::fs::create_dir_all(dir)
                 .map_err(|e| ClientError::Core(dpm_core::CoreError::IoError(e)))?;
         }
-        let db = open_db(&main_dir).await?;
+        let db = open_db(&main_dir, false).await?;
+        let info_db = open_db(&main_dir, true).await?;
         Ok(Context {
             scope: Scope::PerUser,
             main_dir,
@@ -175,6 +184,7 @@ impl Context {
             install_dir,
             config_dir,
             db: Arc::new(db),
+            info_db: Arc::new(info_db),
         })
     }
 }

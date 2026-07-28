@@ -21,7 +21,7 @@ impl Default for ServerConfig {
             project_src: "packages".to_string(),
             repo_dir: "Repo".to_string(),
             keys_dir: "keys".to_string(),
-            repo_info: "RepoInfo.json".to_string(),
+            repo_info: "RepoInfo.db".to_string(),
         }
     }
 }
@@ -98,7 +98,7 @@ mod tests {
         assert_eq!(cfg.project_src, "packages");
         assert_eq!(cfg.repo_dir, "Repo");
         assert_eq!(cfg.keys_dir, "keys");
-        assert_eq!(cfg.repo_info, "RepoInfo.json");
+        assert_eq!(cfg.repo_info, "RepoInfo.db");
     }
 
     #[test]

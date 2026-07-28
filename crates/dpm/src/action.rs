@@ -401,7 +401,7 @@ impl ActionInfo {
             .fetch_update_repo_info(&source.repo_info)
             .await?;
 
-        ctx.db.clear_table_for_source(&source.alias).await?;
+        ctx.info_db.clear_source_available(&source.alias).await?;
 
         let mut key_cache: HashMap<String, VerifyingKey> = HashMap::new();
 
@@ -471,8 +471,8 @@ impl ActionInfo {
                             .map(|dep| Dependency::new(&dep.name, &dep.version))
                             .collect::<Vec<_>>()
                     });
-                ctx.db
-                    .insert(DbPackage::new(
+                ctx.info_db
+                    .insert_available(DbPackage::new(
                         &source.alias,
                         name,
                         &version_info.version,
@@ -563,7 +563,7 @@ impl ActionInfo {
                         "no source with alias '{alias}'"
                     )));
                 }
-                self.ctx.db.clear_table_for_source(&alias).await?;
+                self.ctx.info_db.clear_source_available(&alias).await?;
                 dpm_core::TomlStorage::to_toml(&setting, &config_path)?;
                 println!("{}", "Source removed.".green());
             }
@@ -1036,7 +1036,7 @@ mod sync_source_tests {
             .await
             .unwrap();
 
-        let all = ctx.db.read_all().await.unwrap();
+        let all = ctx.info_db.read_available().await.unwrap();
         assert_eq!(all.len(), 1, "the badly-signed package must be skipped");
         assert_eq!(all[0].name, "good-pkg");
     }
@@ -1135,7 +1135,7 @@ mod sync_source_tests {
             .await
             .unwrap();
 
-        let all = ctx.db.read_all().await.unwrap();
+        let all = ctx.info_db.read_available().await.unwrap();
         assert_eq!(
             all.len(),
             1,
@@ -1188,7 +1188,7 @@ mod sync_source_tests {
             .await
             .unwrap();
 
-        let all = ctx.db.read_all().await.unwrap();
+        let all = ctx.info_db.read_available().await.unwrap();
         assert_eq!(
             all.len(),
             0,
@@ -1235,7 +1235,7 @@ mod sync_source_tests {
             .await
             .unwrap();
 
-        let all = ctx.db.read_all().await.unwrap();
+        let all = ctx.info_db.read_available().await.unwrap();
         assert_eq!(
             all.len(),
             0,
@@ -1291,7 +1291,7 @@ mod sync_source_tests {
             .await
             .unwrap();
 
-        let all = ctx.db.read_all().await.unwrap();
+        let all = ctx.info_db.read_available().await.unwrap();
         assert_eq!(
             all.len(),
             0,
@@ -1347,7 +1347,7 @@ mod sync_source_tests {
             .await
             .unwrap();
 
-        let all = ctx.db.read_all().await.unwrap();
+        let all = ctx.info_db.read_available().await.unwrap();
         assert_eq!(
             all.len(),
             0,
@@ -1397,7 +1397,7 @@ mod sync_source_tests {
             .await
             .unwrap();
 
-        let all = ctx.db.read_all().await.unwrap();
+        let all = ctx.info_db.read_available().await.unwrap();
         assert_eq!(all.len(), 1, "a universal build must always be kept");
     }
 
@@ -1443,7 +1443,7 @@ mod sync_source_tests {
             .await
             .unwrap();
 
-        let all = ctx.db.read_all().await.unwrap();
+        let all = ctx.info_db.read_available().await.unwrap();
         assert_eq!(
             all.len(),
             0,
@@ -1662,8 +1662,8 @@ mod install_resolved_tests {
             None,
         );
 
-        ctx.db.insert(pkg1).await.unwrap();
-        ctx.db.insert(pkg2).await.unwrap();
+        ctx.info_db.insert_available(pkg1).await.unwrap();
+        ctx.info_db.insert_available(pkg2).await.unwrap();
 
         let setting = Setting::default();
         // Query "he" should match "hello" by partial substring

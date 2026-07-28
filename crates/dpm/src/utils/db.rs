@@ -50,31 +50,59 @@ impl Db {
 
     /// 把編進 binary 的 migration SQL 攤開到 DB 檔案同層的 migrations/ 資料夾,
     /// 再交給 geni 執行(geni 只吃真實存在的資料夾路徑,不吃 embedded 內容)。
-    pub async fn run_migrations(&self) -> ClientResult<()> {
-        let migrations_dir = Path::new(&self.db_path)
-            .parent()
-            .ok_or_else(|| ClientError::SystemError("invalid database path".to_string()))?
-            .join("migrations");
-        std::fs::create_dir_all(&migrations_dir).map_err(|e| ClientError::Core(IoError(e)))?;
-
-        MIGRATIONS_DIR
-            .extract(&migrations_dir)
-            .map_err(|e| ClientError::Core(IoError(e)))?;
-
-        geni::migrate_database(
-            format!("sqlite://{}", self.db_path),
-            None,
-            "schema_migrations".to_string(),
-            migrations_dir.to_string_lossy().to_string(),
-            migrations_dir
-                .join("schema.sql")
-                .to_string_lossy()
-                .to_string(),
-            Some(30),
-            false,
-        )
-        .await
-        .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+    pub async fn run_migrations(&self, is_info: bool) -> ClientResult<()> {
+        let conn = self.connect().await?;
+        if is_info {
+            conn.execute(
+                r#"CREATE TABLE IF NOT EXISTS AvailablePackages (
+                    source TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    url TEXT,
+                    hash TEXT,
+                    filename TEXT,
+                    build_command TEXT,
+                    description TEXT NOT NULL,
+                    entry TEXT,
+                    dependencies TEXT,
+                    author TEXT,
+                    signature TEXT,
+                    targets TEXT,
+                    PRIMARY KEY (source, name, version)
+                );"#,
+                (),
+            ).await.map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        } else {
+            conn.execute(
+                r#"CREATE TABLE IF NOT EXISTS InstalledPackages (
+                    source TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    url TEXT,
+                    hash TEXT,
+                    filename TEXT,
+                    build_command TEXT,
+                    description TEXT NOT NULL,
+                    entry TEXT,
+                    dependencies TEXT,
+                    author TEXT,
+                    signature TEXT,
+                    installed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (name)
+                );"#,
+                (),
+            ).await.map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+            conn.execute(
+                r#"CREATE TABLE IF NOT EXISTS installed_files (
+                    package_name TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    PRIMARY KEY (package_name, file_path)
+                );"#,
+                (),
+            ).await.map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        }
         Ok(())
     }
 
@@ -124,6 +152,114 @@ impl Db {
         })
     }
 
+
+    pub async fn insert_available(&self, pkg: DbPackage) -> ClientResult<()> {
+        let dependencies_json = pkg
+            .dependencies
+            .as_ref()
+            .map(|deps| serde_json::to_string(deps).unwrap_or_else(|_| "[]".to_string()));
+        let conn = self.connect().await?;
+        let to_value = |opt: Option<String>| match opt {
+            Some(s) => turso::Value::Text(s),
+            None => turso::Value::Null,
+        };
+        let params: Vec<turso::Value> = vec![
+            turso::Value::Text(pkg.source),
+            turso::Value::Text(pkg.name),
+            turso::Value::Text(pkg.version),
+            turso::Value::Text(pkg.kind),
+            to_value(pkg.url),
+            to_value(pkg.hash),
+            to_value(pkg.filename),
+            to_value(pkg.build_command),
+            turso::Value::Text(pkg.description),
+            to_value(pkg.entry),
+            to_value(dependencies_json),
+            to_value(pkg.author),
+            to_value(pkg.signature),
+        ];
+        conn.execute(
+            &format!(
+                "INSERT INTO AvailablePackages ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"
+            ),
+            params,
+        )
+        .await
+        .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        Ok(())
+    }
+
+    pub async fn read_available(&self) -> ClientResult<Vec<DbPackage>> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(&format!("SELECT {COLUMNS} FROM AvailablePackages"), ())
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        let mut packages = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+        {
+            packages.push(Self::row_to_package(row)?);
+        }
+        Ok(packages)
+    }
+
+    pub async fn read_one_available(
+        &self,
+        source: &str,
+        name: &str,
+        version: &str,
+    ) -> ClientResult<Option<DbPackage>> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                &format!(
+                    "SELECT {COLUMNS} FROM AvailablePackages WHERE source = ?1 AND name = ?2 AND version = ?3"
+                ),
+                [source, name, version],
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        match rows
+            .next()
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+        {
+            Some(row) => Ok(Some(Self::row_to_package(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn search_available(&self, name: &str) -> ClientResult<Vec<DbPackage>> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                &format!("SELECT {COLUMNS} FROM AvailablePackages WHERE name = ?1"),
+                [name],
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        let mut packages = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+        {
+            packages.push(Self::row_to_package(row)?);
+        }
+        Ok(packages)
+    }
+
+    pub async fn clear_source_available(&self, source: &str) -> ClientResult<()> {
+        let conn = self.connect().await?;
+        conn.execute("DELETE FROM AvailablePackages WHERE source = ?1", [source])
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        Ok(())
+    }
+
     pub async fn insert(&self, pkg: DbPackage) -> ClientResult<()> {
         let dependencies_json = pkg
             .dependencies
@@ -151,7 +287,7 @@ impl Db {
         ];
         conn.execute(
             &format!(
-                "INSERT INTO LocalRepo ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"
+                "INSERT INTO InstalledPackages ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"
             ),
             params,
         )
@@ -163,7 +299,7 @@ impl Db {
     pub async fn read_all(&self) -> ClientResult<Vec<DbPackage>> {
         let conn = self.connect().await?;
         let mut rows = conn
-            .query(&format!("SELECT {COLUMNS} FROM LocalRepo"), ())
+            .query(&format!("SELECT {COLUMNS} FROM InstalledPackages"), ())
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
         let mut packages = Vec::new();
@@ -187,7 +323,7 @@ impl Db {
         let mut rows = conn
             .query(
                 &format!(
-                    "SELECT {COLUMNS} FROM LocalRepo WHERE source = ?1 AND name = ?2 AND version = ?3"
+                    "SELECT {COLUMNS} FROM InstalledPackages WHERE source = ?1 AND name = ?2 AND version = ?3"
                 ),
                 [source, name, version],
             )
@@ -212,7 +348,7 @@ impl Db {
     pub async fn delete(&self, source: &str, name: &str, version: &str) -> ClientResult<()> {
         let conn = self.connect().await?;
         conn.execute(
-            "DELETE FROM LocalRepo WHERE source = ?1 AND name = ?2 AND version = ?3",
+            "DELETE FROM AvailablePackages WHERE source = ?1 AND name = ?2 AND version = ?3",
             [source, name, version],
         )
         .await
@@ -221,7 +357,7 @@ impl Db {
     }
 
     pub fn validate_table_name(tname: &str) -> ClientResult<()> {
-        let is_valid = matches!(tname, "LocalRepo" | "schema_migrations")
+        let is_valid = matches!(tname, "InstalledPackages" | "AvailablePackages" | "schema_migrations")
             || (!tname.is_empty()
                 && tname.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
                 && !tname.starts_with(|c: char| c.is_ascii_digit()));
@@ -254,7 +390,7 @@ impl Db {
 
     pub async fn clear_table_for_source(&self, source: &str) -> ClientResult<()> {
         let conn = self.connect().await?;
-        conn.execute("DELETE FROM LocalRepo WHERE source = ?1", [source])
+        conn.execute("DELETE FROM AvailablePackages WHERE source = ?1", [source])
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
         Ok(())
@@ -264,7 +400,7 @@ impl Db {
         let conn = self.connect().await?;
         let mut rows = conn
             .query(
-                &format!("SELECT {COLUMNS} FROM LocalRepo WHERE source = ?1 AND name = ?2"),
+                &format!("SELECT {COLUMNS} FROM AvailablePackages WHERE source = ?1 AND name = ?2"),
                 [source, name],
             )
             .await
@@ -284,7 +420,7 @@ impl Db {
         let conn = self.connect().await?;
         let mut rows = conn
             .query(
-                "SELECT DISTINCT source FROM LocalRepo WHERE name = ?1",
+                "SELECT DISTINCT source FROM AvailablePackages WHERE name = ?1",
                 [name],
             )
             .await
@@ -321,7 +457,7 @@ impl Db {
         let mut rows = conn
             .query(
                 &format!(
-                    "SELECT {COLUMNS} FROM LocalRepo WHERE source = ?1 AND name = ?2 ORDER BY rowid DESC LIMIT 1"
+                    "SELECT {COLUMNS} FROM AvailablePackages WHERE source = ?1 AND name = ?2 ORDER BY rowid DESC LIMIT 1"
                 ),
                 [source, name],
             )

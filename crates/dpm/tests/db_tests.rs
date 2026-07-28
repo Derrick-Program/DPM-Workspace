@@ -7,7 +7,7 @@ mod db_tests {
     type TestResult = Result<(), Box<dyn Error>>;
 
     /// 建立一個跑好 migration 的測試用 Db
-    async fn setup_db(dir: &std::path::Path) -> Result<Db, Box<dyn Error>> {
+    async fn setup_db(dir: &std::path::Path, is_info: bool) -> Result<Db, Box<dyn Error>> {
         let db_path = dir.join("test.db");
         let lock_path = dir.join("test.lock");
         let db = Db::new(
@@ -15,7 +15,7 @@ mod db_tests {
             lock_path.to_str().ok_or("invalid lock path")?,
         )
         .await?;
-        db.run_migrations().await?;
+        db.run_migrations(is_info).await?;
         Ok(db)
     }
 
@@ -40,7 +40,7 @@ mod db_tests {
     #[tokio::test]
     async fn test_db_new_and_migrations() -> TestResult {
         let dir = tempdir()?;
-        let _db = setup_db(dir.path()).await?;
+        let _db = setup_db(dir.path(), false).await?;
         assert!(dir.path().join("test.db").exists());
         Ok(())
     }
@@ -48,10 +48,10 @@ mod db_tests {
     #[tokio::test]
     async fn test_insert_and_read_all() -> TestResult {
         let dir = tempdir()?;
-        let db = setup_db(dir.path()).await?;
-        db.insert(sample_pkg("official", "0.1.0")).await?;
+        let db = setup_db(dir.path(), true).await?;
+        db.insert_available(sample_pkg("official", "0.1.0")).await?;
 
-        let all = db.read_all().await?;
+        let all = db.read_available().await?;
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "test_pkg");
         assert_eq!(all[0].source, "official");
@@ -66,12 +66,12 @@ mod db_tests {
         // must come back as `None`, not `""`. `""` used to double as the
         // "no entry" sentinel before the column became nullable.
         let dir = tempdir()?;
-        let db = setup_db(dir.path()).await?;
+        let db = setup_db(dir.path(), true).await?;
         let mut pkg = sample_pkg("official", "0.1.0");
         pkg.entry = None;
-        db.insert(pkg).await?;
+        db.insert_available(pkg).await?;
 
-        let found = db.read_one("official", "test_pkg", "0.1.0").await?;
+        let found = db.read_one_available("official", "test_pkg", "0.1.0").await?;
         assert_eq!(found.unwrap().entry, None);
         Ok(())
     }
@@ -79,17 +79,17 @@ mod db_tests {
     #[tokio::test]
     async fn test_read_one_is_scoped_to_source_and_version() -> TestResult {
         let dir = tempdir()?;
-        let db = setup_db(dir.path()).await?;
-        db.insert(sample_pkg("official", "0.1.0")).await?;
+        let db = setup_db(dir.path(), true).await?;
+        db.insert_available(sample_pkg("official", "0.1.0")).await?;
 
-        let found = db.read_one("official", "test_pkg", "0.1.0").await?;
+        let found = db.read_one_available("official", "test_pkg", "0.1.0").await?;
         assert!(found.is_some());
         assert_eq!(found.unwrap().hash, Some("1234567890abcdef".to_string()));
 
-        let wrong_source = db.read_one("other", "test_pkg", "0.1.0").await?;
+        let wrong_source = db.read_one_available("other", "test_pkg", "0.1.0").await?;
         assert!(wrong_source.is_none());
 
-        let wrong_version = db.read_one("official", "test_pkg", "9.9.9").await?;
+        let wrong_version = db.read_one_available("official", "test_pkg", "9.9.9").await?;
         assert!(wrong_version.is_none());
         Ok(())
     }
@@ -97,9 +97,9 @@ mod db_tests {
     #[tokio::test]
     async fn test_versions_of_returns_every_version_in_that_source() -> TestResult {
         let dir = tempdir()?;
-        let db = setup_db(dir.path()).await?;
-        db.insert(sample_pkg("official", "0.1.0")).await?;
-        db.insert(sample_pkg("official", "0.2.0")).await?;
+        let db = setup_db(dir.path(), true).await?;
+        db.insert_available(sample_pkg("official", "0.1.0")).await?;
+        db.insert_available(sample_pkg("official", "0.2.0")).await?;
 
         let versions = db.versions_of("official", "test_pkg").await?;
         assert_eq!(versions.len(), 2);
@@ -109,9 +109,9 @@ mod db_tests {
     #[tokio::test]
     async fn test_sources_of_lists_distinct_sources_for_bare_name() -> TestResult {
         let dir = tempdir()?;
-        let db = setup_db(dir.path()).await?;
-        db.insert(sample_pkg("official", "0.1.0")).await?;
-        db.insert(sample_pkg("third-party", "0.1.0")).await?;
+        let db = setup_db(dir.path(), true).await?;
+        db.insert_available(sample_pkg("official", "0.1.0")).await?;
+        db.insert_available(sample_pkg("third-party", "0.1.0")).await?;
 
         let mut sources = db.sources_of("test_pkg").await?;
         sources.sort();
@@ -128,9 +128,9 @@ mod db_tests {
     #[tokio::test]
     async fn test_latest_version_is_the_most_recently_inserted_row() -> TestResult {
         let dir = tempdir()?;
-        let db = setup_db(dir.path()).await?;
-        db.insert(sample_pkg("official", "0.1.0")).await?;
-        db.insert(sample_pkg("official", "0.2.0")).await?;
+        let db = setup_db(dir.path(), true).await?;
+        db.insert_available(sample_pkg("official", "0.1.0")).await?;
+        db.insert_available(sample_pkg("official", "0.2.0")).await?;
 
         let latest = db
             .latest_version("official", "test_pkg")
@@ -143,18 +143,18 @@ mod db_tests {
     #[tokio::test]
     async fn test_clear_table_for_source_only_wipes_that_source() -> TestResult {
         let dir = tempdir()?;
-        let db = setup_db(dir.path()).await?;
-        db.insert(sample_pkg("official", "0.1.0")).await?;
-        db.insert(sample_pkg("third-party", "0.1.0")).await?;
+        let db = setup_db(dir.path(), true).await?;
+        db.insert_available(sample_pkg("official", "0.1.0")).await?;
+        db.insert_available(sample_pkg("third-party", "0.1.0")).await?;
 
         db.clear_table_for_source("official").await?;
 
         assert!(db
-            .read_one("official", "test_pkg", "0.1.0")
+            .read_one_available("official", "test_pkg", "0.1.0")
             .await?
             .is_none());
         assert!(db
-            .read_one("third-party", "test_pkg", "0.1.0")
+            .read_one_available("third-party", "test_pkg", "0.1.0")
             .await?
             .is_some());
         Ok(())
@@ -163,18 +163,18 @@ mod db_tests {
     #[tokio::test]
     async fn test_delete_is_scoped_to_source_and_version() -> TestResult {
         let dir = tempdir()?;
-        let db = setup_db(dir.path()).await?;
-        db.insert(sample_pkg("official", "0.1.0")).await?;
-        db.insert(sample_pkg("official", "0.2.0")).await?;
+        let db = setup_db(dir.path(), true).await?;
+        db.insert_available(sample_pkg("official", "0.1.0")).await?;
+        db.insert_available(sample_pkg("official", "0.2.0")).await?;
 
         db.delete("official", "test_pkg", "0.1.0").await?;
 
         assert!(db
-            .read_one("official", "test_pkg", "0.1.0")
+            .read_one_available("official", "test_pkg", "0.1.0")
             .await?
             .is_none());
         assert!(db
-            .read_one("official", "test_pkg", "0.2.0")
+            .read_one_available("official", "test_pkg", "0.2.0")
             .await?
             .is_some());
         Ok(())
@@ -182,11 +182,11 @@ mod db_tests {
 
     #[tokio::test]
     async fn test_table_name_validation() -> TestResult {
-        assert!(Db::validate_table_name("LocalRepo").is_ok());
+        assert!(Db::validate_table_name("InstalledPackages").is_ok());
         assert!(Db::validate_table_name("schema_migrations").is_ok());
         assert!(Db::validate_table_name("custom_table_1").is_ok());
 
-        assert!(Db::validate_table_name("LocalRepo; DROP TABLE LocalRepo;--").is_err());
+        assert!(Db::validate_table_name("InstalledPackages; DROP TABLE InstalledPackages;--").is_err());
         assert!(Db::validate_table_name("invalid-table-name").is_err());
         assert!(Db::validate_table_name("123invalid").is_err());
         assert!(Db::validate_table_name("").is_err());
@@ -196,26 +196,26 @@ mod db_tests {
     #[tokio::test]
     async fn test_clear_and_drop_table() -> TestResult {
         let dir = tempdir()?;
-        let db = setup_db(dir.path()).await?;
+        let db = setup_db(dir.path(), false).await?;
         db.insert(sample_pkg("official", "0.1.0")).await?;
 
-        db.clear_table("LocalRepo").await?;
+        db.clear_table("InstalledPackages").await?;
         assert!(db.read_all().await?.is_empty());
 
         assert!(db
-            .clear_table("LocalRepo; DROP TABLE LocalRepo;--")
+            .clear_table("InstalledPackages; DROP TABLE InstalledPackages;--")
             .await
             .is_err());
         assert!(db.drop_table("invalid table").await.is_err());
 
-        db.drop_table("LocalRepo").await?;
+        db.drop_table("InstalledPackages").await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn test_record_get_and_remove_installed_files() -> TestResult {
         let dir = tempdir()?;
-        let db = setup_db(dir.path()).await?;
+        let db = setup_db(dir.path(), false).await?;
 
         let files = vec![
             "/opt/dpm/opt/hello".to_string(),

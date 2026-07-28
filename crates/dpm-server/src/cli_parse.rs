@@ -89,7 +89,7 @@ pub enum AddKind {
         /// downloads it once to compute its blake3 hash — it does not keep
         /// a copy. Must be https://.
         url: String,
-        /// Override the file name recorded in RepoInfo.json (defaults to
+        /// Override the file name recorded in RepoInfo.db (defaults to
         /// the URL's last path segment)
         #[arg(long)]
         file_name: Option<String>,

@@ -42,20 +42,32 @@ fn main() -> Result<()> {
     create_dir_all(&project_src)?;
     create_dir_all(&repo_dir)?;
     create_dir_all(&keys_dir)?;
-    let mut repo_info: RepoInfo;
-    if !software_repo_info.exists() {
-        println!("RepoInfo.json not found. Initializing an empty one.");
-        repo_info = RepoInfo::new();
-    } else {
-        println!("Loading RepoInfo.json...");
-        repo_info = JsonStorage::from_json(&software_repo_info).unwrap_or_else(|_| {
-            eprintln!("Warning: failed to parse RepoInfo.json. Initializing as empty — saving after this run will overwrite the unparseable file.");
-            RepoInfo::new()
-        });
-    }
+    let conn = rusqlite::Connection::open(&software_repo_info)
+        .map_err(|e| anyhow::anyhow!("Failed to open RepoInfo.db: {}", e))?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS Packages (
+            name TEXT NOT NULL,
+            version TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            url TEXT,
+            hash TEXT,
+            filename TEXT,
+            build_command TEXT,
+            description TEXT NOT NULL,
+            entry TEXT,
+            dependencies TEXT,
+            author TEXT,
+            signature TEXT,
+            targets TEXT,
+            PRIMARY KEY (name, version)
+        )",
+        [],
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to initialize RepoInfo.db table: {}", e))?;
+
     match &cli.command {
         Commands::Hash(obj) => hash(obj, &project_src, &repo_dir)?,
-        Commands::Fix(obj) => fix(obj, &mut repo_info, &project_src, &keys_dir)?,
+        Commands::Fix(obj) => fix(obj, &conn, &project_src, &keys_dir)?,
         Commands::Build(obj) => build(obj, &project_src, &repo_dir)?,
         Commands::Init(obj) => init(obj, &project_src, &keys_dir)?,
         Commands::Keygen(obj) => keygen(obj, &keys_dir)?,
@@ -63,6 +75,5 @@ fn main() -> Result<()> {
         // 已經在函式最前面攔截並提早回傳了,這裡理論上永遠不會執行到。
         Commands::GenConfig(_) => unreachable!("GenConfig is handled earlier in main()"),
     }
-    JsonStorage::to_json(&repo_info, &software_repo_info)?;
     Ok(())
 }
