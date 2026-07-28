@@ -359,11 +359,25 @@ impl SystemController {
     pub async fn init_existing(&self, ctx: &Context) -> ClientResult<Setting> {
         self.bootstrap_dirs(ctx)?;
         let config_path = ctx.config_path();
-        Ok(dpm_core::load_layered(
+        let mut setting: Setting = dpm_core::load_layered(
             &Context::system_config_path(),
             &config_path,
             "DPM",
-        )?)
+        )?;
+
+        let mut migrated = false;
+        for source in &mut setting.sources {
+            if source.repo_url.contains("DPM-Server") || source.repo_info.contains("DPM-Server") {
+                source.repo_url = OFFICIAL_REPO_URL.to_string();
+                source.repo_info = official_repo_info_url(OFFICIAL_REPO_URL);
+                migrated = true;
+            }
+        }
+        if migrated {
+            let _ = dpm_core::TomlStorage::to_toml(&setting, &config_path);
+        }
+
+        Ok(setting)
     }
 
     /// `gen-config` subcommand:在使用者層建立一個「空的」`config.toml`
@@ -586,6 +600,30 @@ mod tests {
         assert_eq!(reloaded.sources[0].repo_url, OFFICIAL_REPO_URL);
         assert_eq!(
             reloaded.sources[0].repo_info,
+            official_repo_info_url(OFFICIAL_REPO_URL)
+        );
+    }
+
+    #[tokio::test]
+    async fn init_existing_automatically_migrates_deprecated_dpm_server_url() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+        let controller = SystemController::new(ctx.scope);
+
+        controller.bootstrap_dirs(&ctx).unwrap();
+        let legacy_setting = Setting {
+            sources: vec![Source {
+                alias: "official".to_string(),
+                repo_url: "https://github.com/Derrick-Program/DPM-Server".to_string(),
+                repo_info: "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/RepoInfo.json?cb=1".to_string(),
+            }],
+        };
+        dpm_core::TomlStorage::to_toml(&legacy_setting, &ctx.config_path()).unwrap();
+
+        let migrated = controller.init_existing(&ctx).await.unwrap();
+        assert_eq!(migrated.sources[0].repo_url, OFFICIAL_REPO_URL);
+        assert_eq!(
+            migrated.sources[0].repo_info,
             official_repo_info_url(OFFICIAL_REPO_URL)
         );
     }
