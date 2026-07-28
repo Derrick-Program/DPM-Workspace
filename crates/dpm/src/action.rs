@@ -234,7 +234,8 @@ impl ActionInfo {
                     .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
 
                 if matches!(repo_package_info.kind()?, PackageKind::Source { .. }) {
-                    self.install_source_package(pkg, &source_alias, repo_package_info, &staging).await?;
+                    self.install_source_package(pkg, &source_alias, repo_package_info, &staging)
+                        .await?;
                     if self.verbose {
                         println!("  {}", "Installed!".green());
                     }
@@ -268,7 +269,10 @@ impl ActionInfo {
                     staging.path(),
                     &self.system_controller,
                 )?;
-                self.ctx.db.record_installed_files(pkg, &tracked_files).await?;
+                self.ctx
+                    .db
+                    .record_installed_files(pkg, &tracked_files)
+                    .await?;
 
                 if self.verbose {
                     println!("  {}", "Installed!".green());
@@ -374,7 +378,10 @@ impl ActionInfo {
             staging.path(),
             &self.system_controller,
         )?;
-        self.ctx.db.record_installed_files(pkg, &tracked_files).await
+        self.ctx
+            .db
+            .record_installed_files(pkg, &tracked_files)
+            .await
     }
 
     /// 抓某一個來源的完整索引,清空該來源在本地 DB 的舊資料,把每個套件的每個
@@ -396,99 +403,106 @@ impl ActionInfo {
         source: &Source,
         is_official: bool,
     ) -> ClientResult<()> {
-        let mut remote_repo = RepoInfo::new();
-        remote_repo
-            .fetch_update_repo_info(&source.repo_info)
-            .await?;
+        let temp_dir = tempfile::tempdir().map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+        let temp_db_path = temp_dir.path().join("RepoInfo.db");
+        crate::fetch_repo_info(&source.repo_info, &temp_db_path).await?;
 
         ctx.info_db.clear_source_available(&source.alias).await?;
 
         let mut key_cache: HashMap<String, VerifyingKey> = HashMap::new();
-
         let target = self_update::get_target();
-        for (name, versions) in remote_repo.get_package_handler() {
-            for version_info in versions {
-                let (kind_str, url, hash, filename, build_command) =
-                    match version_info.kind.to_db_fields(target) {
-                        Ok(fields) => fields,
-                        Err(e) => {
-                            println!(
-                                "{} skipping {name}@{} — {e}",
-                                "Warning:".yellow(),
-                                version_info.version
-                            );
-                            continue;
-                        }
-                    };
 
-                if is_official {
-                    let author = version_info.author.as_deref();
-                    let signature = version_info.signature.as_deref();
-                    let verified = match (author, signature, hash.as_deref()) {
-                        (Some(author), Some(signature), Some(hash)) => {
-                            verify_official_signature(
-                                &source.repo_url,
-                                author,
-                                hash,
-                                signature,
-                                &mut key_cache,
-                            )
-                            .await
-                        }
-                        _ => Err(ClientError::Core(CoreError::SignatureInvalid(
-                            "missing author, signature, or hash".to_string(),
-                        ))),
-                    };
-                    if let Err(e) = verified {
-                        // Only an actual signature-validity problem (bad/
-                        // missing signature, bad key bytes, missing fields,
-                        // a rejected author id) is safe to treat as "this
-                        // one package version is untrustworthy, skip it and
-                        // keep going." Anything else — a network/HTTP
-                        // failure fetching the author's key, an IO error,
-                        // etc. — is not evidence the package is malicious;
-                        // treating it the same way would silently empty the
-                        // local index (the DB for this source was already
-                        // cleared above) while `sync_source_inner` still
-                        // reports success. Propagate those as a hard error
-                        // instead so the sync visibly fails.
-                        if !matches!(e, ClientError::Core(CoreError::SignatureInvalid(_))) {
-                            return Err(e);
-                        }
+        let remote_db = turso::Builder::new_local(temp_db_path.to_str().unwrap())
+            .build()
+            .await
+            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?
+            .connect()
+            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
+
+        let mut rows = remote_db
+            .query("SELECT name, version, kind, url, hash, filename, build_command, description, entry, dependencies, author, signature, targets FROM Packages", ())
+            .await
+            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
+
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?
+        {
+            let name = row.get_value(0).unwrap().as_text().unwrap().to_string();
+            let version = row.get_value(1).unwrap().as_text().unwrap().to_string();
+            let kind_str = row.get_value(2).unwrap().as_text().unwrap().to_string();
+            let url = row.get_value(3).unwrap().as_text().map(|s| s.to_string());
+            let hash = row.get_value(4).unwrap().as_text().map(|s| s.to_string());
+            let filename = row.get_value(5).unwrap().as_text().map(|s| s.to_string());
+            let build_command = row.get_value(6).unwrap().as_text().map(|s| s.to_string());
+            let description = row.get_value(7).unwrap().as_text().unwrap().to_string();
+            let entry = row.get_value(8).unwrap().as_text().map(|s| s.to_string());
+            let dependencies = row.get_value(9).unwrap().as_text().map(|s| s.to_string());
+            let author = row.get_value(10).unwrap().as_text().map(|s| s.to_string());
+            let signature = row.get_value(11).unwrap().as_text().map(|s| s.to_string());
+            let targets_str = row.get_value(12).unwrap().as_text().map(|s| s.to_string());
+
+            if let Some(ref targets) = targets_str {
+                if !targets.is_empty() {
+                    let target_list: Vec<&str> = targets.split(',').collect();
+                    if !target_list.contains(&&*target) {
                         println!(
-                            "{} skipping {name}@{} (author: {}) — signature verification failed: {e}",
+                            "{} skipping {}@{} — unsupported target {}",
                             "Warning:".yellow(),
-                            version_info.version,
-                            author.unwrap_or("<none>"),
+                            name,
+                            version,
+                            target
                         );
                         continue;
                     }
                 }
-
-                let dependencies: Option<Vec<dpm_core::Dependency>> =
-                    version_info.dependencies.as_ref().map(|deps| {
-                        deps.iter()
-                            .map(|dep| Dependency::new(&dep.name, &dep.version))
-                            .collect::<Vec<_>>()
-                    });
-                ctx.info_db
-                    .insert_available(DbPackage::new(
-                        &source.alias,
-                        name,
-                        &version_info.version,
-                        kind_str,
-                        url,
-                        hash,
-                        filename,
-                        build_command,
-                        version_info.description.as_deref().unwrap_or(""),
-                        version_info.entry.clone(),
-                        dependencies,
-                        version_info.author.clone(),
-                        version_info.signature.clone(),
-                    ))
-                    .await?;
             }
+
+            if is_official {
+                let author_ref = author.as_deref();
+                let signature_ref = signature.as_deref();
+                let verified = match (author_ref, signature_ref, hash.as_deref()) {
+                    (Some(a), Some(s), Some(h)) => {
+                        verify_official_signature(&source.repo_url, a, h, s, &mut key_cache).await
+                    }
+                    _ => Err(ClientError::Core(CoreError::SignatureInvalid(
+                        "missing author, signature, or hash".to_string(),
+                    ))),
+                };
+                if let Err(e) = verified {
+                    if !matches!(e, ClientError::Core(CoreError::SignatureInvalid(_))) {
+                        return Err(e);
+                    }
+                    println!(
+                        "{} skipping {}@{} (author: {}) — signature verification failed: {e}",
+                        "Warning:".yellow(),
+                        name,
+                        version,
+                        author_ref.unwrap_or("<none>"),
+                    );
+                    continue;
+                }
+            }
+
+            let dependencies_obj = dependencies.and_then(|d| serde_json::from_str(&d).ok());
+            ctx.info_db
+                .insert_available(DbPackage::new(
+                    &source.alias,
+                    &name,
+                    &version,
+                    &kind_str,
+                    url,
+                    hash,
+                    filename,
+                    build_command,
+                    &description,
+                    entry,
+                    dependencies_obj,
+                    author,
+                    signature,
+                ))
+                .await?;
         }
         Ok(())
     }
@@ -527,7 +541,8 @@ impl ActionInfo {
                 });
                 if alias == "official" {
                     return Err(ClientError::ConfigError(
-                        "the official source is built-in and hardcoded; cannot be modified".to_string(),
+                        "the official source is built-in and hardcoded; cannot be modified"
+                            .to_string(),
                     ));
                 }
                 if setting.sources.iter().any(|s| s.alias == alias) {
@@ -592,7 +607,12 @@ impl ActionInfo {
                 }
 
                 // 1. O(1) DB Manifest Cleanup: remove every file/symlink registered in DB
-                let recorded_files = self.ctx.db.get_installed_files(&pkg).await.unwrap_or_default();
+                let recorded_files = self
+                    .ctx
+                    .db
+                    .get_installed_files(&pkg)
+                    .await
+                    .unwrap_or_default();
                 for file_path in recorded_files {
                     let p = Path::new(&file_path);
                     if p.exists() || p.symlink_metadata().is_ok() {
@@ -633,8 +653,8 @@ impl ActionInfo {
     pub async fn search(&self) -> ClientResult<()> {
         let all_packages = self
             .ctx
-            .db
-            .read_all()
+            .info_db
+            .read_available()
             .await
             .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
 
@@ -676,7 +696,10 @@ impl ActionInfo {
                     || p.description.to_lowercase().contains(&q_lower)
                 {
                     found_for_query = true;
-                    if !matched_dpm.iter().any(|m| m.source == p.source && m.name == p.name && m.version == p.version) {
+                    if !matched_dpm
+                        .iter()
+                        .any(|m| m.source == p.source && m.name == p.name && m.version == p.version)
+                    {
                         matched_dpm.push(p);
                     }
                 }
@@ -967,6 +990,122 @@ mod sync_source_tests {
     /// 但不透過 `RepoInfo::add_package_version`(那個方法在 `server` feature
     /// 底下,`dpm` 沒有開這個 feature)——直接組出等價的 JSON 內容給
     /// `fetch_update_repo_info` 解析。
+    async fn build_fake_repo_db(fake_info: &FakeRepoInfo) -> Vec<u8> {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("RepoInfo.db");
+        {
+            let conn = turso::Builder::new_local(db_path.to_str().unwrap())
+                .build()
+                .await
+                .unwrap()
+                .connect()
+                .unwrap();
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS Packages (
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    url TEXT,
+                    hash TEXT,
+                    filename TEXT,
+                    build_command TEXT,
+                    description TEXT NOT NULL,
+                    entry TEXT,
+                    dependencies TEXT,
+                    author TEXT,
+                    signature TEXT,
+                    targets TEXT,
+                    PRIMARY KEY (name, version)
+                )",
+                (),
+            )
+            .await
+            .unwrap();
+
+            for (name, versions) in &fake_info.packages {
+                for v in versions {
+                    let (kind_str, url, hash, filename, build_command) = match &v.kind {
+                        PackageKind::Prebuilt { builds } => {
+                            let b = &builds[0];
+                            (
+                                "prebuilt".to_string(),
+                                Some(b.url.clone()),
+                                Some(b.hash.clone()),
+                                Some(b.file_name.clone()),
+                                None,
+                            )
+                        }
+                        PackageKind::Source { build, hash, .. } => (
+                            "source".to_string(),
+                            None,
+                            hash.clone(),
+                            None,
+                            Some(build.clone()),
+                        ),
+                    };
+
+                    let targets_str = match &v.kind {
+                        PackageKind::Prebuilt { builds } => {
+                            let mut targets = Vec::new();
+                            for b in builds {
+                                if let Some(t) = &b.target {
+                                    targets.push(t.clone());
+                                }
+                            }
+                            if targets.is_empty() {
+                                None
+                            } else {
+                                Some(targets.join(","))
+                            }
+                        }
+                        PackageKind::Source {
+                            supported_targets, ..
+                        } => {
+                            if let Some(st) = supported_targets {
+                                Some(st.join(","))
+                            } else {
+                                None
+                            }
+                        }
+                    };
+
+                    let to_value = |opt: Option<String>| match opt {
+                        Some(s) => turso::Value::Text(s),
+                        None => turso::Value::Null,
+                    };
+                    let dependencies_str = v
+                        .dependencies
+                        .as_ref()
+                        .map(|d| serde_json::to_string(d).unwrap());
+
+                    conn.execute(
+                        "INSERT INTO Packages (name, version, kind, url, hash, filename, build_command, description, entry, dependencies, author, signature, targets)
+                        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                        vec![
+                            turso::Value::Text(name.clone()),
+                            turso::Value::Text(v.version.clone()),
+                            turso::Value::Text(kind_str),
+                            to_value(url),
+                            to_value(hash),
+                            to_value(filename),
+                            to_value(build_command),
+                            turso::Value::Text(v.description.clone().unwrap_or_default()),
+                            to_value(v.entry.clone()),
+                            to_value(dependencies_str),
+                            to_value(v.author.clone()),
+                            to_value(v.signature.clone()),
+                            to_value(targets_str),
+                        ],
+                    )
+                    .await
+                    .unwrap();
+                }
+            }
+            let _ = conn.execute("PRAGMA wal_checkpoint(FULL)", ()).await;
+        }
+        std::fs::read(&db_path).unwrap()
+    }
+
     #[derive(serde::Serialize)]
     struct FakeRepoInfo {
         packages: StdHashMap<String, Vec<PackageVersionInfo>>,
@@ -1019,7 +1158,7 @@ mod sync_source_tests {
                 signature: Some(bad_sig),
             }],
         );
-        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+        let body = build_fake_repo_db(&FakeRepoInfo { packages }).await;
 
         let key_url = serve_once(pubkey_bytes);
         let repo_info_url = serve_once(body);
@@ -1076,7 +1215,7 @@ mod sync_source_tests {
                 signature: Some(sig),
             }],
         );
-        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+        let body = build_fake_repo_db(&FakeRepoInfo { packages }).await;
 
         let key_url = serve_once_404();
         let repo_info_url = serve_once(body);
@@ -1120,7 +1259,7 @@ mod sync_source_tests {
                 signature: None,
             }],
         );
-        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+        let body = build_fake_repo_db(&FakeRepoInfo { packages }).await;
         let repo_info_url = serve_once(body);
 
         let source = Source {
@@ -1171,7 +1310,7 @@ mod sync_source_tests {
                 signature: Some(sig),
             }],
         );
-        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+        let body = build_fake_repo_db(&FakeRepoInfo { packages }).await;
         let repo_info_url = serve_once(body);
 
         let source = Source {
@@ -1220,7 +1359,7 @@ mod sync_source_tests {
                 signature: None,
             }],
         );
-        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+        let body = build_fake_repo_db(&FakeRepoInfo { packages }).await;
         let repo_info_url = serve_once(body);
 
         let source = Source {
@@ -1274,7 +1413,7 @@ mod sync_source_tests {
                 signature: Some(sig_over_wrong_hash),
             }],
         );
-        let body = serde_json::to_vec(&FakeRepoInfo { packages }).unwrap();
+        let body = build_fake_repo_db(&FakeRepoInfo { packages }).await;
 
         let key_url = serve_once(pubkey_bytes);
         let repo_info_url = serve_once(body);
@@ -1307,7 +1446,7 @@ mod sync_source_tests {
         // 避免巧合等於本機 target。
         let other_target = format!("not-{target}");
 
-        let body = serde_json::to_vec(&FakeRepoInfo {
+        let body = build_fake_repo_db(&FakeRepoInfo {
             packages: {
                 let mut m = StdHashMap::new();
                 m.insert(
@@ -1332,7 +1471,7 @@ mod sync_source_tests {
                 m
             },
         })
-        .unwrap();
+        .await;
         let repo_info_url = serve_once(body);
 
         let source = Source {
@@ -1357,7 +1496,7 @@ mod sync_source_tests {
 
     #[tokio::test]
     async fn sync_source_inner_keeps_a_prebuilt_version_with_a_universal_build() {
-        let body = serde_json::to_vec(&FakeRepoInfo {
+        let body = build_fake_repo_db(&FakeRepoInfo {
             packages: {
                 let mut m = StdHashMap::new();
                 m.insert(
@@ -1382,7 +1521,7 @@ mod sync_source_tests {
                 m
             },
         })
-        .unwrap();
+        .await;
         let repo_info_url = serve_once(body);
 
         let source = Source {
@@ -1406,7 +1545,7 @@ mod sync_source_tests {
         let target = self_update::get_target();
         let other_target = format!("not-{target}");
 
-        let body = serde_json::to_vec(&FakeRepoInfo {
+        let body = build_fake_repo_db(&FakeRepoInfo {
             packages: {
                 let mut m = StdHashMap::new();
                 m.insert(
@@ -1428,7 +1567,7 @@ mod sync_source_tests {
                 m
             },
         })
-        .unwrap();
+        .await;
         let repo_info_url = serve_once(body);
 
         let source = Source {
@@ -1667,11 +1806,13 @@ mod install_resolved_tests {
 
         let setting = Setting::default();
         // Query "he" should match "hello" by partial substring
-        let action_partial = ActionInfo::new(ctx.clone(), vec!["he".to_string()], false, setting.clone());
+        let action_partial =
+            ActionInfo::new(ctx.clone(), vec!["he".to_string()], false, setting.clone());
         assert!(action_partial.search().await.is_ok());
 
         // Query "sub" should match "addsub" by partial substring in name AND description
-        let action_desc = ActionInfo::new(ctx.clone(), vec!["sub".to_string()], false, setting.clone());
+        let action_desc =
+            ActionInfo::new(ctx.clone(), vec!["sub".to_string()], false, setting.clone());
         assert!(action_desc.search().await.is_ok());
 
         // Empty query should list all available packages without error

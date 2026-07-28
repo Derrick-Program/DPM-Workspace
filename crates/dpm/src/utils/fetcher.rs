@@ -2,6 +2,18 @@ use crate::{download_file, read_file_from_zip, ClientError, ClientResult, DbPack
 use dpm_core::{CoreError, JsonStorage, PackageInfo};
 use std::path::Path;
 
+pub async fn fetch_repo_info(url: &str, download_path: &Path) -> ClientResult<()> {
+    if let Some(path_str) = url.strip_prefix("file://") {
+        std::fs::copy(path_str, download_path)
+            .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+    } else if std::path::Path::new(url).exists() {
+        std::fs::copy(url, download_path).map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+    } else {
+        crate::download_file(url, download_path).await?;
+    }
+    Ok(())
+}
+
 /// Downloads a `kind: "prebuilt"` package's archive to `download_path` and
 /// verifies it two ways: the archive's own blake3 hash against what the
 /// local index recorded for it, and the `packageInfo.json` inside it
