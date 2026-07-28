@@ -99,6 +99,44 @@ fn entry_resolves_inside_install_dir(
 /// "none" — the empty string used to double as a sentinel the caller had to
 /// remember to check for; `None` makes "no entry" a value the type system
 /// enforces instead of a convention.
+fn create_relative_or_abs_symlink(target: &Path, link_path: &Path) {
+    if link_path.exists() || link_path.symlink_metadata().is_ok() {
+        let _ = fs::remove_file(link_path).or_else(|_| fs::remove_dir_all(link_path));
+    }
+    if let Some(parent) = link_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    #[cfg(unix)]
+    let _ = std::os::unix::fs::symlink(target, link_path);
+}
+
+fn link_subdirs_to_env(install_path: &Path, main_dir: &Path) {
+    let mapping = [
+        ("bin", main_dir.join("bin")),
+        ("sbin", main_dir.join("sbin")),
+        ("lib", main_dir.join("lib")),
+        ("include", main_dir.join("include")),
+        ("share", main_dir.join("share")),
+        ("completions", main_dir.join("completions")),
+        ("docs", main_dir.join("docs")),
+        ("etc", main_dir.join("etc")),
+        ("var", main_dir.join("var")),
+    ];
+
+    for (sub_name, target_env_dir) in mapping {
+        let pkg_subdir = install_path.join(sub_name);
+        if pkg_subdir.exists() && pkg_subdir.is_dir() {
+            if let Ok(entries) = fs::read_dir(&pkg_subdir) {
+                for entry in entries.flatten() {
+                    let file_name = entry.file_name();
+                    let link_dest = target_env_dir.join(file_name);
+                    create_relative_or_abs_symlink(&entry.path(), &link_dest);
+                }
+            }
+        }
+    }
+}
+
 pub fn place_package(
     pkg: &str,
     content_dir: &Path,
@@ -111,6 +149,15 @@ pub fn place_package(
     let install_path = install_dir.join(pkg);
     swap_into_install_dir(content_dir, &install_path, staging_root)?;
 
+    // 1. opt/ fixed-version symlink: opt/<pkg> -> Software/<pkg>
+    let main_dir = install_dir.parent().unwrap_or(install_dir);
+    let opt_link = main_dir.join("opt").join(pkg);
+    create_relative_or_abs_symlink(&install_path, &opt_link);
+
+    // 2. Link subdirectories (bin, sbin, lib, include, share, completions, docs, etc, var)
+    link_subdirs_to_env(&install_path, main_dir);
+
+    // 3. Main entry point symlink
     let Some(entry) = entry.filter(|e| !e.is_empty()) else {
         return Ok(());
     };
@@ -203,6 +250,51 @@ mod tests {
             !bin_dir.join("pkg").exists(),
             "no entry means no symlink should be created"
         );
+    }
+
+    #[test]
+    fn place_package_creates_opt_symlink_and_links_subdirectories() {
+        let root = tempdir().unwrap();
+        let main_dir = root.path().join("main");
+        let install_dir = main_dir.join("Software");
+        let bin_dir = main_dir.join("bin");
+        let opt_dir = main_dir.join("opt");
+        let lib_dir = main_dir.join("lib");
+        let include_dir = main_dir.join("include");
+
+        for d in [&main_dir, &install_dir, &bin_dir, &opt_dir, &lib_dir, &include_dir] {
+            fs::create_dir_all(d).unwrap();
+        }
+
+        let content_dir = root.path().join("content");
+        fs::create_dir_all(content_dir.join("lib")).unwrap();
+        fs::create_dir_all(content_dir.join("include")).unwrap();
+        fs::write(content_dir.join("lib").join("libtest.so"), b"binary lib").unwrap();
+        fs::write(content_dir.join("include").join("test.h"), b"header").unwrap();
+
+        let controller = SystemController::new(Scope::PerUser);
+        place_package(
+            "mypkg",
+            &content_dir,
+            None,
+            &install_dir,
+            &bin_dir,
+            root.path(),
+            &controller,
+        )
+        .unwrap();
+
+        // 1. Verify opt/mypkg -> Software/mypkg
+        let opt_link = opt_dir.join("mypkg");
+        assert!(opt_link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_link(&opt_link).unwrap(), install_dir.join("mypkg"));
+
+        // 2. Verify sub-directory links (lib/libtest.so & include/test.h)
+        let linked_lib = lib_dir.join("libtest.so");
+        assert!(linked_lib.symlink_metadata().unwrap().file_type().is_symlink());
+
+        let linked_inc = include_dir.join("test.h");
+        assert!(linked_inc.symlink_metadata().unwrap().file_type().is_symlink());
     }
 
     #[test]

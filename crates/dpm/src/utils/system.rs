@@ -287,33 +287,28 @@ impl SystemController {
     /// ownership. Shared by `init_first_run`/`init_existing` — bootstrap
     /// happens either way, only what's done with `config.toml` differs.
     fn bootstrap_dirs(&self, ctx: &Context) -> ClientResult<()> {
-        let install_dir_str = ctx.install_dir.to_str().ok_or_else(|| {
-            ClientError::SystemError("Invalid UTF-8 in install_dir path".to_string())
-        })?;
-        self.system_command_runner(
-            "mkdir",
-            vec!["-p", install_dir_str],
-            "Can't create Software dir",
-        )?;
-        // config_dir is the layered config system's user tier — the OS-standard
-        // per-user config directory, scope-independent (see
-        // docs/superpowers/specs/2026-07-27-layered-toml-config-design.md).
-        // It must never go through system_command_runner's --system-mode sudo
-        // prefix (unlike main_dir, this directory is shared with per-user mode
-        // and must stay writable by the actual user, not root). On Linux,
-        // --system already runs this whole process as root (main.rs's
-        // sudo::escalate_if_needed()), so even a plain create_dir_all here
-        // still produces a root-owned directory — chown_dir_to_sudo_user
-        // corrects that back to the invoking user; it's a no-op on macOS and
-        // under per-user scope, where there's never a mismatch to fix.
+        let env_dirs = [
+            &ctx.install_dir,
+            &ctx.bin_dir,
+            &ctx.sbin_dir(),
+            &ctx.lib_dir(),
+            &ctx.include_dir(),
+            &ctx.share_dir(),
+            &ctx.completions_dir(),
+            &ctx.docs_dir(),
+            &ctx.opt_dir(),
+            &ctx.etc_dir(),
+            &ctx.var_dir(),
+        ];
+        for dir in env_dirs {
+            let dir_str = dir.to_str().ok_or_else(|| {
+                ClientError::SystemError(format!("Invalid UTF-8 in directory path: {}", dir.display()))
+            })?;
+            self.system_command_runner("mkdir", vec!["-p", dir_str], "Can't create directory")?;
+        }
         std::fs::create_dir_all(&ctx.config_dir)
             .map_err(|e| ClientError::SystemError(format!("Can't create config dir: {e}")))?;
         Self::chown_config_dir_to_invoking_user(ctx)?;
-        let bin_dir_str = ctx
-            .bin_dir
-            .to_str()
-            .ok_or_else(|| ClientError::SystemError("Invalid UTF-8 in bin_dir path".to_string()))?;
-        self.system_command_runner("mkdir", vec!["-p", bin_dir_str], "Can't create bin dir")?;
         self.permision_check(&ctx.main_dir)
     }
 

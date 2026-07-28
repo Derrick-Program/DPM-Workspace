@@ -97,6 +97,16 @@ impl Context {
         }
     }
 
+    pub fn sbin_dir(&self) -> PathBuf { self.main_dir.join("sbin") }
+    pub fn lib_dir(&self) -> PathBuf { self.main_dir.join("lib") }
+    pub fn include_dir(&self) -> PathBuf { self.main_dir.join("include") }
+    pub fn share_dir(&self) -> PathBuf { self.main_dir.join("share") }
+    pub fn completions_dir(&self) -> PathBuf { self.main_dir.join("completions") }
+    pub fn docs_dir(&self) -> PathBuf { self.main_dir.join("docs") }
+    pub fn opt_dir(&self) -> PathBuf { self.main_dir.join("opt") }
+    pub fn etc_dir(&self) -> PathBuf { self.main_dir.join("etc") }
+    pub fn var_dir(&self) -> PathBuf { self.main_dir.join("var") }
+
     /// Production constructor. Resolves `scope`'s real paths, creates
     /// `main_dir` (fixing ownership under `--system`) if it doesn't exist
     /// yet, and opens the real local package database under it.
@@ -138,7 +148,22 @@ impl Context {
         let bin_dir = main_dir.join("bin");
         let install_dir = main_dir.join("Software");
         let config_dir = main_dir.join("Settings");
-        for dir in [&main_dir, &bin_dir, &install_dir, &config_dir] {
+        let subdirs = [
+            &main_dir,
+            &bin_dir,
+            &install_dir,
+            &config_dir,
+            &main_dir.join("sbin"),
+            &main_dir.join("lib"),
+            &main_dir.join("include"),
+            &main_dir.join("share"),
+            &main_dir.join("completions"),
+            &main_dir.join("docs"),
+            &main_dir.join("opt"),
+            &main_dir.join("etc"),
+            &main_dir.join("var"),
+        ];
+        for dir in subdirs {
             std::fs::create_dir_all(dir)
                 .map_err(|e| ClientError::Core(dpm_core::CoreError::IoError(e)))?;
         }

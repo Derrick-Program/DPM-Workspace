@@ -582,17 +582,48 @@ impl ActionInfo {
         if !is.is_empty() {
             for (_, pkg, _) in is {
                 let pre_rm_location = self.ctx.install_dir.join(&pkg);
-                let pre_rm_ln = self.ctx.bin_dir.join(&pkg);
+                let opt_link = self.ctx.opt_dir().join(&pkg);
+
                 if self.verbose {
                     println!("{}\n\n  {}", pkg.on_green(), "Removing...".red());
                 }
-                remove_dir_all(pre_rm_location)
-                    .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
-                if self.verbose {
-                    println!("  {}", "Removed!".green());
-                    println!("  {}", "UnLinking...".red());
+
+                if opt_link.exists() || opt_link.symlink_metadata().is_ok() {
+                    let _ = remove_file(&opt_link);
                 }
-                remove_file(pre_rm_ln).map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+
+                if pre_rm_location.exists() {
+                    let _ = remove_dir_all(&pre_rm_location);
+                }
+
+                let env_dirs = [
+                    self.ctx.bin_dir.clone(),
+                    self.ctx.sbin_dir(),
+                    self.ctx.lib_dir(),
+                    self.ctx.include_dir(),
+                    self.ctx.share_dir(),
+                    self.ctx.completions_dir(),
+                    self.ctx.docs_dir(),
+                    self.ctx.etc_dir(),
+                    self.ctx.var_dir(),
+                ];
+
+                for env_dir in env_dirs {
+                    let direct_link = env_dir.join(&pkg);
+                    if direct_link.exists() || direct_link.symlink_metadata().is_ok() {
+                        let _ = remove_file(&direct_link);
+                    }
+                    if let Ok(entries) = std::fs::read_dir(&env_dir) {
+                        for entry in entries.flatten() {
+                            if let Ok(target) = std::fs::read_link(entry.path()) {
+                                if target.starts_with(&pre_rm_location) {
+                                    let _ = remove_file(entry.path());
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if self.verbose {
                     println!("  {}", "Done".green());
                 }
