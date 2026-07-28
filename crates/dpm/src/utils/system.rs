@@ -12,7 +12,7 @@ use std::{
 /// 要拿它跟 `Source.repo_url` 比對,判斷是否該套用簽章驗證這個安全閘門
 /// (刻意比對這個寫死的常數,不是使用者本機 `config.toml` 可以自己編輯的
 /// `alias` 字串)。
-pub(crate) const OFFICIAL_REPO_URL: &str = "crates/dpm-server";
+pub(crate) const OFFICIAL_REPO_URL: &str = "https://github.com/Derrick-Program/DPM-Workspace";
 
 /// 把 `https://github.com/<owner>/<repo>` 轉成該 repo 在 `main` 分支上某個
 /// 檔案路徑的 raw content URL。`official_repo_info_url`/`official_key_url`
@@ -24,14 +24,16 @@ fn raw_content_url(repo_url: &str, path: &str) -> String {
     } else if Path::new(repo_url).exists() {
         Path::new(repo_url).join(path).display().to_string()
     } else {
-        format!(
-            "{}/main/{path}",
-            repo_url.replacen(
-                "https://github.com/",
-                "https://raw.githubusercontent.com/",
-                1
-            )
-        )
+        let raw_base = repo_url.replacen(
+            "https://github.com/",
+            "https://raw.githubusercontent.com/",
+            1,
+        );
+        if repo_url.contains("DPM-Workspace") && !path.starts_with("crates/dpm-server/") {
+            format!("{raw_base}/main/crates/dpm-server/{path}")
+        } else {
+            format!("{raw_base}/main/{path}")
+        }
     }
 }
 
