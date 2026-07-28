@@ -236,18 +236,18 @@ pub fn init(obj: &Init, project_src: &Path, keys_dir: &Path) -> ServerResult<()>
 
 pub fn fix(
     obj: &Fix,
-    repo: &mut RepoInfo,
+    conn: &rusqlite::Connection,
     project_src: &Path,
     keys_dir: &Path,
 ) -> ServerResult<()> {
     match &obj.command {
-        FixAction::Add(obj) => fix_add(obj, repo, project_src, keys_dir)?,
-        FixAction::Del(obj) => fix_del(obj, repo)?,
+        FixAction::Add(obj) => fix_add(obj, conn, project_src, keys_dir)?,
+        FixAction::Del(obj) => fix_del(obj, conn)?,
     }
     Ok(())
 }
 
-/// `fix_add` 寫進 `RepoInfo.json` 之前的守門檢查,兩種 kind 共用:
+/// `fix_add` 寫進 `RepoInfo.db` 之前的守門檢查,兩種 kind 共用:
 /// 1. `packageInfo.json` 一定要有 `author`/`signature`/`hash`。
 /// 2. `signature` 必須是 `author` 的公鑰對 `hash` 的合法簽章。
 /// 3. 如果這個套件名稱在 `repo` 裡已經有版本,新版本的 `author` 必須跟第一次
@@ -255,7 +255,7 @@ pub fn fix(
 ///    這是第一次發布,直接放行(沒有「跟誰比對」的問題)。
 fn verify_publish_authorization(
     pk_info: &PackageInfo,
-    repo: &RepoInfo,
+    conn: &rusqlite::Connection,
     project_name: &str,
     keys_dir: &Path,
 ) -> ServerResult<()> {
@@ -293,39 +293,29 @@ fn verify_publish_authorization(
         ))
     })?;
 
-    match repo.versions_of(project_name) {
-        Ok(versions) => {
-            if let Some(existing) = versions.first() {
-                if existing.author.as_deref() != Some(author) {
-                    return Err(ServerError::ValidationError(format!(
-                        "{project_name} was first published by author '{}', but this version is signed by '{author}' — authorship cannot change without manual review",
-                        existing.author.as_deref().unwrap_or("<unknown>")
-                    )));
-                }
-            }
+    let mut stmt = conn.prepare("SELECT author FROM Packages WHERE name = ? ORDER BY version ASC LIMIT 1").map_err(|e| ServerError::ValidationError(format!("Database error: {e}")))?;
+    let existing_author: Option<String> = stmt.query_row([project_name], |row| row.get(0)).ok();
+    
+    if let Some(existing) = existing_author {
+        if existing != author {
+            return Err(ServerError::ValidationError(format!(
+                "{project_name} was first published by author '{existing}', but this version is signed by '{author}' — authorship cannot change without manual review"
+            )));
         }
-        // First publish of this package name — nothing to compare against,
-        // fall through and allow it.
-        Err(CoreError::PackageNotFound(_)) => {}
-        // Any other `CoreError` variant is not something this check knows
-        // how to interpret as "no prior versions" — fail closed instead of
-        // silently skipping the author-consistency check (the central
-        // anti-hijack invariant of this whole feature).
-        Err(e) => return Err(e.into()),
     }
     Ok(())
 }
 
 fn fix_add(
     obj: &Add,
-    repo: &mut RepoInfo,
+    conn: &rusqlite::Connection,
     project_src: &Path,
     keys_dir: &Path,
 ) -> ServerResult<()> {
     let path = project_src.join(&obj.project_name);
     let pk_info: PackageInfo = JsonStorage::from_json(&path.join("packageInfo.json"))?;
 
-    verify_publish_authorization(&pk_info, repo, &obj.project_name, keys_dir)?;
+    verify_publish_authorization(&pk_info, conn, &obj.project_name, keys_dir)?;
 
     let kind = match &obj.kind {
         AddKind::Url {
@@ -390,7 +380,7 @@ fn fix_add(
             // Same check as the Url arm above, mirrored for source packages:
             // recompute the hash this `--build` value would produce and
             // compare it against the signed hash, so someone with
-            // RepoInfo.json write access (but no signing key) can't swap the
+            // RepoInfo.db write access (but no signing key) can't swap the
             // build command out from under an already-signed packageInfo.json.
             let commit = source_repo_commit_hash(&path)?;
             let recomputed_hash = dpm_core::hash_bytes(format!("{build}\n{commit}").as_bytes());
@@ -409,23 +399,64 @@ fn fix_add(
         }
     };
 
-    let version_info = PackageVersionInfo {
-        version: pk_info.version.clone(),
-        kind,
-        dependencies: pk_info.dependencies.clone(),
-        entry: None,
-        description: Some(pk_info.description.clone()),
-        author: pk_info.author.clone(),
-        signature: pk_info.signature.clone(),
+    let (kind_str, url, filename, build_command, targets_str) = match &kind {
+        PackageKind::Prebuilt { builds } => {
+            let build = &builds[0];
+            ("prebuilt", Some(build.url.clone()), Some(build.file_name.clone()), None, build.target.clone())
+        }
+        PackageKind::Source { build, supported_targets, .. } => {
+            ("source", None, None, Some(build.clone()), supported_targets.clone().map(|t| t.join(",")))
+        }
     };
-    repo.add_package_version(obj.project_name.clone(), version_info)?;
+    
+    let dependencies_str = serde_json::to_string(&pk_info.dependencies).unwrap_or_else(|_| "{}".to_string());
+    
+    conn.execute(
+        "INSERT INTO Packages (name, version, kind, url, hash, filename, build_command, description, entry, dependencies, author, signature, targets)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(name, version) DO UPDATE SET
+            kind = excluded.kind,
+            url = excluded.url,
+            hash = excluded.hash,
+            filename = excluded.filename,
+            build_command = excluded.build_command,
+            description = excluded.description,
+            entry = excluded.entry,
+            dependencies = excluded.dependencies,
+            author = excluded.author,
+            signature = excluded.signature,
+            targets = excluded.targets",
+        rusqlite::params![
+            obj.project_name,
+            pk_info.version,
+            kind_str,
+            url,
+            pk_info.hash,
+            filename,
+            build_command,
+            pk_info.description,
+            "",
+            dependencies_str,
+            pk_info.author,
+            pk_info.signature,
+            targets_str
+        ]
+    ).map_err(|e| ServerError::ValidationError(format!("Database insert error: {e}")))?;
     Ok(())
 }
-fn fix_del(obj: &Del, repo: &mut RepoInfo) -> ServerResult<()> {
+fn fix_del(obj: &Del, conn: &rusqlite::Connection) -> ServerResult<()> {
     let version = match &obj.version {
         Some(v) => v.clone(),
         None => {
-            let versions = repo.versions_of(&obj.project_name)?;
+            let mut stmt = conn.prepare("SELECT version FROM Packages WHERE name = ? ORDER BY version ASC").map_err(|e| ServerError::ValidationError(format!("Database error: {e}")))?;
+            let versions_iter = stmt.query_map([&obj.project_name], |row| row.get(0)).unwrap();
+            let mut versions: Vec<String> = Vec::new();
+            for v in versions_iter {
+                if let Ok(val) = v { versions.push(val); }
+            }
+            if versions.is_empty() {
+                return Err(ServerError::Core(CoreError::PackageNotFound(obj.project_name.clone())));
+            }
             if versions.len() > 1 {
                 return Err(ServerError::ValidationError(format!(
                     "package {} has {} published versions — specify which one to remove",
@@ -433,16 +464,10 @@ fn fix_del(obj: &Del, repo: &mut RepoInfo) -> ServerResult<()> {
                     versions.len()
                 )));
             }
-            versions
-                .first()
-                .ok_or_else(|| {
-                    ServerError::Core(CoreError::PackageNotFound(obj.project_name.clone()))
-                })?
-                .version
-                .clone()
+            versions[0].clone()
         }
     };
-    repo.remove_package_version(&obj.project_name, &version)?;
+    conn.execute("DELETE FROM Packages WHERE name = ? AND version = ?", [&obj.project_name, &version]).map_err(|e| ServerError::ValidationError(format!("Database delete error: {e}")))?;
     println!(
         "Package '{}@{}' removed successfully.",
         obj.project_name, version
@@ -563,7 +588,26 @@ mod tests {
 
         init_git_repo(&project_src);
         init_hash_sign_for_build(&project_src, &keys_dir, "demo-pkg", "alice", "v1 build");
-        let mut repo = RepoInfo::new();
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS Packages (
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                url TEXT,
+                hash TEXT,
+                filename TEXT,
+                build_command TEXT,
+                description TEXT NOT NULL,
+                entry TEXT,
+                dependencies TEXT,
+                author TEXT,
+                signature TEXT,
+                targets TEXT,
+                PRIMARY KEY (name, version)
+            )",
+            [],
+        ).unwrap();
         fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
@@ -572,7 +616,7 @@ mod tests {
                     targets: None,
                 },
             },
-            &mut repo,
+            &conn,
             &project_src,
             &keys_dir,
         )
@@ -620,17 +664,14 @@ mod tests {
                     targets: None,
                 },
             },
-            &mut repo,
+            &conn,
             &project_src,
             &keys_dir,
         )
         .unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
-        assert_eq!(
-            repo.versions_of("demo-pkg").unwrap().len(),
-            1,
-            "the rejected v2 must not be added"
-        );
+                let count: i64 = conn.query_row("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1, "the rejected v2 must not be added");
 
         std::fs::remove_dir_all(&project_src).ok();
     }
@@ -652,7 +693,26 @@ mod tests {
 
         init_git_repo(&project_src);
         init_hash_sign_for_build(&project_src, &keys_dir, "demo-pkg", "alice", "v1 build");
-        let mut repo = RepoInfo::new();
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS Packages (
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                url TEXT,
+                hash TEXT,
+                filename TEXT,
+                build_command TEXT,
+                description TEXT NOT NULL,
+                entry TEXT,
+                dependencies TEXT,
+                author TEXT,
+                signature TEXT,
+                targets TEXT,
+                PRIMARY KEY (name, version)
+            )",
+            [],
+        ).unwrap();
         fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
@@ -661,7 +721,7 @@ mod tests {
                     targets: None,
                 },
             },
-            &mut repo,
+            &conn,
             &project_src,
             &keys_dir,
         )
@@ -699,17 +759,16 @@ mod tests {
                     targets: None,
                 },
             },
-            &mut repo,
+            &conn,
             &project_src,
             &keys_dir,
         )
         .unwrap();
 
-        assert_eq!(repo.versions_of("demo-pkg").unwrap().len(), 2);
-        assert_eq!(
-            repo.latest_version("demo-pkg").unwrap().author.as_deref(),
-            Some("alice")
-        );
+                let count: i64 = conn.query_row("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 2);
+                let latest_author: String = conn.query_row("SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(latest_author, "alice");
 
         std::fs::remove_dir_all(&project_src).ok();
     }
@@ -734,7 +793,26 @@ mod tests {
         package_info.signature = Some("0".repeat(128));
         JsonStorage::to_json(&package_info, &info_path).unwrap();
 
-        let mut repo = RepoInfo::new();
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS Packages (
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                url TEXT,
+                hash TEXT,
+                filename TEXT,
+                build_command TEXT,
+                description TEXT NOT NULL,
+                entry TEXT,
+                dependencies TEXT,
+                author TEXT,
+                signature TEXT,
+                targets TEXT,
+                PRIMARY KEY (name, version)
+            )",
+            [],
+        ).unwrap();
         let err = fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
@@ -743,13 +821,14 @@ mod tests {
                     targets: None,
                 },
             },
-            &mut repo,
+            &conn,
             &project_src,
             &keys_dir,
         )
         .unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
-        assert!(repo.versions_of("demo-pkg").is_err());
+                let count: i64 = conn.query_row("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
 
         std::fs::remove_dir_all(&project_src).ok();
     }
@@ -972,7 +1051,26 @@ mod tests {
             "cargo build --release",
         );
 
-        let mut repo = RepoInfo::new();
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS Packages (
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                url TEXT,
+                hash TEXT,
+                filename TEXT,
+                build_command TEXT,
+                description TEXT NOT NULL,
+                entry TEXT,
+                dependencies TEXT,
+                author TEXT,
+                signature TEXT,
+                targets TEXT,
+                PRIMARY KEY (name, version)
+            )",
+            [],
+        ).unwrap();
         let add = Add {
             project_name: "demo-pkg".to_string(),
             kind: AddKind::Build {
@@ -980,25 +1078,20 @@ mod tests {
                 targets: None,
             },
         };
-        fix_add(&add, &mut repo, &project_src, &keys_dir).unwrap();
+        fix_add(&add, &conn, &project_src, &keys_dir).unwrap();
 
-        let version_info = repo.latest_version("demo-pkg").unwrap();
-        assert_eq!(version_info.version, "0.1.0");
-        assert_eq!(version_info.author.as_deref(), Some("alice"));
-        assert!(version_info.signature.is_some());
-        match &version_info.kind {
-            PackageKind::Source { build, hash, .. } => {
-                assert_eq!(build, "cargo build --release");
-                assert!(hash.is_some());
-            }
-            other => panic!("expected PackageKind::Source, got {other:?}"),
-        }
+        let latest_author: String = conn.query_row("SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(latest_author, "alice");
+        let (kind, build_command, hash): (String, Option<String>, Option<String>) = conn.query_row("SELECT kind, build_command, hash FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(kind, "source");
+        assert_eq!(build_command.unwrap(), "cargo build --release");
+        assert!(hash.is_some());
 
         std::fs::remove_dir_all(&project_src).ok();
     }
 
     /// Mirrors the Url arm's downloaded-content hash check (untestable here
-    /// without a network call) for the `Build` arm: RepoInfo.json write
+    /// without a network call) for the `Build` arm: RepoInfo.db write
     /// access without the signing key must not be able to swap the build
     /// command out from under an already-signed packageInfo.json.
     #[test]
@@ -1022,7 +1115,26 @@ mod tests {
             "cargo build --release",
         );
 
-        let mut repo = RepoInfo::new();
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS Packages (
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                url TEXT,
+                hash TEXT,
+                filename TEXT,
+                build_command TEXT,
+                description TEXT NOT NULL,
+                entry TEXT,
+                dependencies TEXT,
+                author TEXT,
+                signature TEXT,
+                targets TEXT,
+                PRIMARY KEY (name, version)
+            )",
+            [],
+        ).unwrap();
         let err = fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
@@ -1033,13 +1145,14 @@ mod tests {
                     targets: None,
                 },
             },
-            &mut repo,
+            &conn,
             &project_src,
             &keys_dir,
         )
         .unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
-        assert!(repo.versions_of("demo-pkg").is_err());
+                let count: i64 = conn.query_row("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
 
         std::fs::remove_dir_all(&project_src).ok();
     }
@@ -1065,7 +1178,26 @@ mod tests {
         let keys_dir = project_src.join("keys");
         init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
 
-        let mut repo = RepoInfo::new();
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS Packages (
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                url TEXT,
+                hash TEXT,
+                filename TEXT,
+                build_command TEXT,
+                description TEXT NOT NULL,
+                entry TEXT,
+                dependencies TEXT,
+                author TEXT,
+                signature TEXT,
+                targets TEXT,
+                PRIMARY KEY (name, version)
+            )",
+            [],
+        ).unwrap();
         let add = Add {
             project_name: "demo-pkg".to_string(),
             kind: AddKind::Url {
@@ -1074,10 +1206,10 @@ mod tests {
                 target: None,
             },
         };
-        let err = fix_add(&add, &mut repo, &project_src, &keys_dir).unwrap_err();
+        let err = fix_add(&add, &conn, &project_src, &keys_dir).unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
         assert!(
-            repo.versions_of("demo-pkg").is_err(),
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", [], |row| row.get(0)).unwrap() == 0,
             "a rejected url must not leave a partial entry in RepoInfo"
         );
 
@@ -1636,85 +1768,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn repo_info_add_package_version_appends_a_new_target_build_to_an_existing_version() {
-        let mut repo = RepoInfo::new();
-        let first = PackageVersionInfo {
-            version: "1.0.0".to_string(),
-            kind: PackageKind::Prebuilt {
-                builds: vec![dpm_core::PrebuiltBuild {
-                    target: Some("x86_64-unknown-linux-gnu".to_string()),
-                    url: "https://example.com/linux.zip".to_string(),
-                    hash: "a".repeat(64),
-                    file_name: "linux.zip".to_string(),
-                }],
-            },
-            dependencies: None,
-            entry: None,
-            description: None,
-            author: Some("alice".to_string()),
-            signature: Some("sig".to_string()),
-        };
-        repo.add_package_version("multi-target-pkg".to_string(), first)
-            .unwrap();
-
-        let second = PackageVersionInfo {
-            version: "1.0.0".to_string(),
-            kind: PackageKind::Prebuilt {
-                builds: vec![dpm_core::PrebuiltBuild {
-                    target: Some("aarch64-apple-darwin".to_string()),
-                    url: "https://example.com/mac.zip".to_string(),
-                    hash: "b".repeat(64),
-                    file_name: "mac.zip".to_string(),
-                }],
-            },
-            dependencies: None,
-            entry: None,
-            description: None,
-            author: Some("alice".to_string()),
-            signature: Some("sig2".to_string()),
-        };
-        repo.add_package_version("multi-target-pkg".to_string(), second)
-            .unwrap();
-
-        let versions = repo.versions_of("multi-target-pkg").unwrap();
-        assert_eq!(versions.len(), 1, "same version, not a second entry");
-        match &versions[0].kind {
-            PackageKind::Prebuilt { builds } => assert_eq!(builds.len(), 2),
-            _ => panic!("expected Prebuilt"),
-        }
-    }
-
-    #[test]
-    fn repo_info_add_package_version_rejects_a_duplicate_target() {
-        let mut repo = RepoInfo::new();
-        let make_info = |target: Option<&str>| PackageVersionInfo {
-            version: "1.0.0".to_string(),
-            kind: PackageKind::Prebuilt {
-                builds: vec![dpm_core::PrebuiltBuild {
-                    target: target.map(|s| s.to_string()),
-                    url: "https://example.com/a.zip".to_string(),
-                    hash: "a".repeat(64),
-                    file_name: "a.zip".to_string(),
-                }],
-            },
-            dependencies: None,
-            entry: None,
-            description: None,
-            author: Some("alice".to_string()),
-            signature: Some("sig".to_string()),
-        };
-        repo.add_package_version(
-            "dup-target-pkg".to_string(),
-            make_info(Some("aarch64-apple-darwin")),
-        )
-        .unwrap();
-        let err = repo
-            .add_package_version(
-                "dup-target-pkg".to_string(),
-                make_info(Some("aarch64-apple-darwin")),
-            )
-            .unwrap_err();
-        assert!(err.to_string().contains("aarch64-apple-darwin"));
-    }
 }
