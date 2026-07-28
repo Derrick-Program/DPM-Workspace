@@ -64,17 +64,14 @@ pub enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
-    /// List can install Package
+    /// List installed packages
     #[command(visible_aliases = ["l", "li", "ll"])]
     List {
         #[arg(short, long)]
         verbose: bool,
-        /// List System installed Package
-        #[arg(short = 's', long = "list-sys")]
-        list_sys_installed: bool,
-        /// List installed Package
-        #[arg(short = 'l', long = "list")]
-        list_installed: bool,
+        /// List packages managed by host OS package manager (Homebrew/Apt/Dnf)
+        #[arg(long = "sys-mgr", visible_aliases = ["os", "system-mgr"])]
+        sys_mgr: bool,
     },
     /// Upgrade Package
     #[command(visible_aliases = ["U", "UP", "grade"], arg_required_else_help = true)]

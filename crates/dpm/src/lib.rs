@@ -86,18 +86,9 @@ pub async fn entry(ctx: Context, config: Cli) -> ClientResult<()> {
                 .search()
                 .await?
         }
-        Some(Commands::List {
-            verbose,
-            list_sys_installed,
-            list_installed,
-        }) => {
+        Some(Commands::List { verbose, sys_mgr }) => {
             let info = ActionInfo::new(ctx.clone(), vec![], verbose, setting_config);
-            if list_sys_installed {
-                info.list(true).await?;
-            }
-            if list_installed || !list_sys_installed {
-                info.list(false).await?;
-            }
+            info.list(sys_mgr).await?;
         }
         Some(Commands::Upgrade { verbose, pn }) => {
             ActionInfo::new(ctx.clone(), pn, verbose, setting_config)
