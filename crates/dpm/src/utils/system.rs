@@ -365,16 +365,25 @@ impl SystemController {
             "DPM",
         )?;
 
-        let mut migrated = false;
+        // Enforce that official source is strictly hardcoded to OFFICIAL_REPO_URL
+        // and cannot be modified or omitted via config files or env vars.
+        let mut found_official = false;
         for source in &mut setting.sources {
-            if source.repo_url.contains("DPM-Server") || source.repo_info.contains("DPM-Server") {
+            if source.alias == "official" {
                 source.repo_url = OFFICIAL_REPO_URL.to_string();
                 source.repo_info = official_repo_info_url(OFFICIAL_REPO_URL);
-                migrated = true;
+                found_official = true;
             }
         }
-        if migrated {
-            let _ = dpm_core::TomlStorage::to_toml(&setting, &config_path);
+        if !found_official {
+            setting.sources.insert(
+                0,
+                Source {
+                    alias: "official".to_string(),
+                    repo_url: OFFICIAL_REPO_URL.to_string(),
+                    repo_info: official_repo_info_url(OFFICIAL_REPO_URL),
+                },
+            );
         }
 
         Ok(setting)

@@ -522,17 +522,20 @@ impl ActionInfo {
                         .unwrap_or(&url)
                         .to_string()
                 });
+                if alias == "official" {
+                    return Err(ClientError::ConfigError(
+                        "the official source is built-in and hardcoded; cannot be modified".to_string(),
+                    ));
+                }
                 if setting.sources.iter().any(|s| s.alias == alias) {
                     return Err(ClientError::ConfigError(format!(
                         "source alias '{alias}' already exists"
                     )));
                 }
-                if alias != "official" {
-                    println!(
-                        "{} third-party source, not vetted by the DPM team",
-                        "Warning:".yellow()
-                    );
-                }
+                println!(
+                    "{} third-party source, not vetted by the DPM team",
+                    "Warning:".yellow()
+                );
                 setting.sources.push(Source {
                     alias,
                     repo_url: url.clone(),
@@ -545,6 +548,11 @@ impl ActionInfo {
                 );
             }
             SourceAction::Remove { alias } => {
+                if alias == "official" {
+                    return Err(ClientError::ConfigError(
+                        "cannot remove the built-in official source".to_string(),
+                    ));
+                }
                 let before = setting.sources.len();
                 setting.sources.retain(|s| s.alias != alias);
                 if setting.sources.len() == before {
