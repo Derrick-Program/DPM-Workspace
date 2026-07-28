@@ -361,14 +361,20 @@ async fn fix_add(
             } else if Path::new(url).exists() {
                 std::fs::read(url)?
             } else {
-                let response = reqwest::blocking::get(url)?;
+                let response = reqwest::get(url)
+                    .await
+                    .map_err(|e| ServerError::Core(CoreError::NetworkError(e.to_string())))?;
                 if !response.status().is_success() {
                     return Err(ServerError::Core(CoreError::NetworkError(format!(
                         "failed to fetch {url}: HTTP {}",
                         response.status()
                     ))));
                 }
-                response.bytes()?.to_vec()
+                response
+                    .bytes()
+                    .await
+                    .map_err(|e| ServerError::Core(CoreError::NetworkError(e.to_string())))?
+                    .to_vec()
             };
 
             let tmp_path = std::env::temp_dir().join(&file_name);
