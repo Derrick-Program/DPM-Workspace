@@ -7,10 +7,8 @@ mod config_tests {
         let setting = Setting {
             sources: vec![Source {
                 alias: "official".to_string(),
-                repo_url: "https://github.com/Derrick-Program/DPM-Server".to_string(),
-                repo_info:
-                    "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/RepoInfo.json"
-                        .to_string(),
+                repo_url: "crates/dpm-server".to_string(),
+                repo_info: "crates/dpm-server/RepoInfo.json".to_string(),
             }],
         };
 
@@ -50,10 +48,8 @@ mod config_tests {
         let default_setting = Setting {
             sources: vec![Source {
                 alias: "official".to_string(),
-                repo_url: "https://github.com/Derrick-Program/DPM-Server".to_string(),
-                repo_info:
-                    "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/RepoInfo.json"
-                        .to_string(),
+                repo_url: "crates/dpm-server".to_string(),
+                repo_info: "crates/dpm-server/RepoInfo.json".to_string(),
             }],
         };
         dpm_core::TomlStorage::to_toml(&default_setting, &config_path).unwrap();

@@ -6,7 +6,7 @@
         "kind": "prebuilt",
         "builds": [
           {
-            "url": "https://raw.githubusercontent.com/Derrick-Program/DPM-Server/main/Repo/hello.zip",
+            "url": "crates/dpm-server/Repo/hello.zip",
             "hash": "5ee92e7e4cf4427c946bec9f9277cb6580f0896cbe3cc0b16c94638c548b9399",
             "file_name": "hello.zip"
           }

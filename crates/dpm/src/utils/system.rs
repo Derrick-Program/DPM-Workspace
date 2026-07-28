@@ -12,7 +12,7 @@ use std::{
 /// 要拿它跟 `Source.repo_url` 比對,判斷是否該套用簽章驗證這個安全閘門
 /// (刻意比對這個寫死的常數,不是使用者本機 `config.toml` 可以自己編輯的
 /// `alias` 字串)。
-pub(crate) const OFFICIAL_REPO_URL: &str = "https://github.com/Derrick-Program/DPM-Server";
+pub(crate) const OFFICIAL_REPO_URL: &str = "crates/dpm-server";
 
 /// 把 `https://github.com/<owner>/<repo>` 轉成該 repo 在 `main` 分支上某個
 /// 檔案路徑的 raw content URL。`official_repo_info_url`/`official_key_url`
