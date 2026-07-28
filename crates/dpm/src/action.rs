@@ -607,18 +607,88 @@ impl ActionInfo {
     }
 
     pub async fn search(&self) -> ClientResult<()> {
-        let (_, is, isnot) = self.parsed_packages().await?;
-        if !is.is_empty() {
-            println!();
-            for (_, pkg, _) in is {
-                println!("{} {}", pkg, "Found!!".green());
+        let all_packages = self
+            .ctx
+            .db
+            .read_all()
+            .await
+            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
+
+        if self.pkgs.is_empty() {
+            if !all_packages.is_empty() {
+                println!("{}", "Available DPM Packages:".green().bold());
+                for p in &all_packages {
+                    let desc = if p.description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" - {}", p.description)
+                    };
+                    println!(
+                        "  {}/{} v{} ({}){}",
+                        p.source.cyan(),
+                        p.name.bold(),
+                        p.version,
+                        p.kind,
+                        desc
+                    );
+                }
+            } else {
+                println!("No packages found in local DPM index. Run `dpm update` to fetch index.");
+            }
+            return Ok(());
+        }
+
+        let mut matched_dpm: Vec<&DbPackage> = Vec::new();
+        let mut unmatched_queries: Vec<&str> = Vec::new();
+
+        for query in &self.pkgs {
+            let q_lower = query.to_lowercase();
+            let mut found_for_query = false;
+
+            for p in &all_packages {
+                let full_name = format!("{}/{}", p.source, p.name);
+                if p.name.to_lowercase().contains(&q_lower)
+                    || full_name.to_lowercase().contains(&q_lower)
+                    || p.description.to_lowercase().contains(&q_lower)
+                {
+                    found_for_query = true;
+                    if !matched_dpm.iter().any(|m| m.source == p.source && m.name == p.name && m.version == p.version) {
+                        matched_dpm.push(p);
+                    }
+                }
+            }
+
+            if !found_for_query {
+                unmatched_queries.push(query.as_str());
             }
         }
-        if !isnot.is_empty() {
-            for pkg in &self.pkgs {
-                self.system_action.search_package(pkg.as_str())?;
+
+        if !matched_dpm.is_empty() {
+            println!("{}", "Found in DPM index:".green().bold());
+            for p in &matched_dpm {
+                let desc = if p.description.is_empty() {
+                    String::new()
+                } else {
+                    format!(" - {}", p.description)
+                };
+                println!(
+                    "  {}/{} v{} ({}){}",
+                    p.source.cyan(),
+                    p.name.bold(),
+                    p.version,
+                    p.kind,
+                    desc
+                );
             }
         }
+
+        for q in unmatched_queries {
+            println!("\nSearching system package manager for '{q}'...");
+            if let Err(e) = self.system_action.search_package(q) {
+                println!("System package search error for '{q}': {e}");
+            }
+        }
+
         Ok(())
     }
 
@@ -1530,5 +1600,58 @@ mod install_resolved_tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("INSECURE"));
+    }
+
+    #[tokio::test]
+    async fn search_finds_packages_by_partial_name_and_description() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        let pkg1 = DbPackage::new(
+            "official",
+            "hello",
+            "0.1.0",
+            "prebuilt",
+            Some("https://example.com/hello.zip".to_string()),
+            Some("a".repeat(64)),
+            Some("hello.zip".to_string()),
+            None,
+            "simple universal hello package",
+            None,
+            None,
+            None,
+            None,
+        );
+        let pkg2 = DbPackage::new(
+            "official",
+            "addsub",
+            "0.1.0",
+            "source",
+            None,
+            Some("b".repeat(64)),
+            None,
+            Some("cc -shared -o libaddsub.dylib src/addsub.c".to_string()),
+            "C add/subtract shared library",
+            None,
+            None,
+            None,
+            None,
+        );
+
+        ctx.db.insert(pkg1).await.unwrap();
+        ctx.db.insert(pkg2).await.unwrap();
+
+        let setting = Setting::default();
+        // Query "he" should match "hello" by partial substring
+        let action_partial = ActionInfo::new(ctx.clone(), vec!["he".to_string()], false, setting.clone());
+        assert!(action_partial.search().await.is_ok());
+
+        // Query "sub" should match "addsub" by partial substring in name AND description
+        let action_desc = ActionInfo::new(ctx.clone(), vec!["sub".to_string()], false, setting.clone());
+        assert!(action_desc.search().await.is_ok());
+
+        // Empty query should list all available packages without error
+        let action_empty = ActionInfo::new(ctx, vec![], false, setting);
+        assert!(action_empty.search().await.is_ok());
     }
 }
