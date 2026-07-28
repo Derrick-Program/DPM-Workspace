@@ -661,6 +661,7 @@ impl ActionInfo {
         }
         if !isnot.is_empty() {
             for pkg in isnot {
+                println!("==> Host OS Package Manager ({}): Removing '{pkg}'...", self.system_action.manager_name().cyan());
                 self.system_action.uninstall_package(&pkg)?;
             }
         }
@@ -677,7 +678,7 @@ impl ActionInfo {
 
         if self.pkgs.is_empty() {
             if !all_packages.is_empty() {
-                println!("{}", "Available DPM Packages:".green().bold());
+                println!("{}", "==> Available DPM Packages:".green().bold());
                 for p in &all_packages {
                     let desc = if p.description.is_empty() {
                         String::new()
@@ -728,7 +729,7 @@ impl ActionInfo {
         }
 
         if !matched_dpm.is_empty() {
-            println!("{}", "Found in DPM index:".green().bold());
+            println!("{}", "==> DPM Package Index Results:".green().bold());
             for p in &matched_dpm {
                 let desc = if p.description.is_empty() {
                     String::new()
@@ -749,9 +750,9 @@ impl ActionInfo {
         }
 
         for q in unmatched_queries {
-            println!("\nSearching system package manager for '{q}'...");
+            println!("\n==> Host OS Package Manager ({}): Searching for '{q}'...", self.system_action.manager_name().cyan());
             if let Err(e) = self.system_action.search_package(q) {
-                println!("System package search error for '{q}': {e}");
+                println!("Host OS package search error for '{q}': {e}");
             }
         }
 
@@ -760,16 +761,16 @@ impl ActionInfo {
 
     pub async fn list(&self, sys: bool) -> ClientResult<()> {
         if sys {
-            println!("{}", "System Package Listing:".green().bold());
+            println!("==> Host OS Package Manager ({}) Installed Packages:", self.system_action.manager_name().green().bold());
             if let Err(e) = self.system_action.list_packages() {
-                println!("System package list error: {e}");
+                println!("Host OS package list error: {e}");
             }
         } else {
             let pkgs = installed_package_names(&self.ctx.install_dir)?;
             if pkgs.is_empty() {
-                println!("{}", "No packages currently installed.".yellow());
+                println!("{}", "No DPM packages currently installed.".yellow());
             } else {
-                println!("{}", "Installed DPM Packages:".green().bold());
+                println!("{}", "==> DPM Installed Packages:".green().bold());
                 for pkg in pkgs {
                     println!("  {}", pkg.green());
                 }

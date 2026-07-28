@@ -90,6 +90,17 @@ impl Verb {
 }
 
 impl PackageManager {
+    pub fn name(self) -> &'static str {
+        match self {
+            PackageManager::Apt => "APT",
+            PackageManager::Dnf => "DNF",
+            PackageManager::Yum => "Yum",
+            PackageManager::Pacman => "Pacman",
+            PackageManager::Zypper => "Zypper",
+            PackageManager::Brew => "Homebrew",
+            PackageManager::Unknown => "System Package Manager",
+        }
+    }
     /// The (command, base-args) pair for one verb under this package
     /// manager. Replaces what used to be six separate `match self.package_manager`
     /// blocks (one per `SystemAction` method), each ending in its own
@@ -412,6 +423,9 @@ impl SystemController {
 }
 
 impl SystemAction {
+    pub fn manager_name(&self) -> &'static str {
+        self.package_manager.name()
+    }
     pub fn new(verbose: bool) -> Self {
         Self {
             package_manager: Self::detect_package_manager(),
