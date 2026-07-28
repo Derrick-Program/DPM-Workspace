@@ -333,9 +333,10 @@ fn fix_add(
             file_name,
             target,
         } => {
-            if !url.starts_with("https://") {
+            let is_local = url.starts_with("file://") || Path::new(url).exists();
+            if !url.starts_with("https://") && !is_local {
                 return Err(ServerError::ValidationError(format!(
-                    "url {url} must use https://"
+                    "url {url} must use https://, file:// or be a valid local file path"
                 )));
             }
             let file_name = file_name
@@ -349,14 +350,21 @@ fn fix_add(
                     )
                 })?;
 
-            let response = reqwest::blocking::get(url)?;
-            if !response.status().is_success() {
-                return Err(ServerError::Core(CoreError::NetworkError(format!(
-                    "failed to fetch {url}: HTTP {}",
-                    response.status()
-                ))));
-            }
-            let bytes = response.bytes()?;
+            let bytes = if let Some(path_str) = url.strip_prefix("file://") {
+                std::fs::read(path_str)?
+            } else if Path::new(url).exists() {
+                std::fs::read(url)?
+            } else {
+                let response = reqwest::blocking::get(url)?;
+                if !response.status().is_success() {
+                    return Err(ServerError::Core(CoreError::NetworkError(format!(
+                        "failed to fetch {url}: HTTP {}",
+                        response.status()
+                    ))));
+                }
+                response.bytes()?.to_vec()
+            };
+
             let tmp_path = std::env::temp_dir().join(&file_name);
             std::fs::write(&tmp_path, &bytes)?;
             let downloaded_hash = dpm_core::hash_file(&tmp_path)?;
