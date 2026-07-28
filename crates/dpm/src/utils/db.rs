@@ -1,10 +1,7 @@
 use super::{ClientError, ClientResult, DbPackage};
 use dpm_core::CoreError::*;
 use fs2::FileExt;
-use include_dir::{include_dir, Dir};
-use std::{fs::File, path::Path};
-
-static MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
+use std::fs::File;
 
 /// Single source of truth for the `LocalRepo` column list — every query below
 /// builds its SELECT/INSERT column list from this, and `row_to_package` looks
@@ -72,7 +69,9 @@ impl Db {
                     PRIMARY KEY (source, name, version)
                 );"#,
                 (),
-            ).await.map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
         } else {
             conn.execute(
                 r#"CREATE TABLE IF NOT EXISTS InstalledPackages (
@@ -93,7 +92,9 @@ impl Db {
                     PRIMARY KEY (name)
                 );"#,
                 (),
-            ).await.map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
             conn.execute(
                 r#"CREATE TABLE IF NOT EXISTS installed_files (
                     package_name TEXT NOT NULL,
@@ -101,7 +102,9 @@ impl Db {
                     PRIMARY KEY (package_name, file_path)
                 );"#,
                 (),
-            ).await.map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
         }
         Ok(())
     }
@@ -151,7 +154,6 @@ impl Db {
             signature: get_opt_text("signature")?,
         })
     }
-
 
     pub async fn insert_available(&self, pkg: DbPackage) -> ClientResult<()> {
         let dependencies_json = pkg
@@ -357,10 +359,12 @@ impl Db {
     }
 
     pub fn validate_table_name(tname: &str) -> ClientResult<()> {
-        let is_valid = matches!(tname, "InstalledPackages" | "AvailablePackages" | "schema_migrations")
-            || (!tname.is_empty()
-                && tname.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && !tname.starts_with(|c: char| c.is_ascii_digit()));
+        let is_valid = matches!(
+            tname,
+            "InstalledPackages" | "AvailablePackages" | "schema_migrations"
+        ) || (!tname.is_empty()
+            && tname.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !tname.starts_with(|c: char| c.is_ascii_digit()));
         if !is_valid {
             return Err(ClientError::Core(DatabaseError(format!(
                 "Invalid or unauthorized table name: {tname}"

@@ -6,7 +6,7 @@ use crate::{
 };
 use colored::Colorize;
 use dpm_core::CoreError;
-use dpm_core::{Dependency, PackageKind, RepoInfo, VerifyingKey};
+use dpm_core::{PackageKind, VerifyingKey};
 use std::collections::HashMap;
 use std::fs::{remove_dir_all, remove_file};
 use std::path::Path;
@@ -457,7 +457,7 @@ impl ActionInfo {
             if let Some(ref targets) = targets_str {
                 if !targets.is_empty() {
                     let target_list: Vec<&str> = targets.split(',').collect();
-                    if !target_list.contains(&&*target) {
+                    if !target_list.contains(&target) {
                         println!(
                             "{} skipping {}@{} — unsupported target {}",
                             "Warning:".yellow(),

@@ -293,9 +293,11 @@ fn verify_publish_authorization(
         ))
     })?;
 
-    let mut stmt = conn.prepare("SELECT author FROM Packages WHERE name = ? ORDER BY version ASC LIMIT 1").map_err(|e| ServerError::ValidationError(format!("Database error: {e}")))?;
+    let mut stmt = conn
+        .prepare("SELECT author FROM Packages WHERE name = ? ORDER BY version ASC LIMIT 1")
+        .map_err(|e| ServerError::ValidationError(format!("Database error: {e}")))?;
     let existing_author: Option<String> = stmt.query_row([project_name], |row| row.get(0)).ok();
-    
+
     if let Some(existing) = existing_author {
         if existing != author {
             return Err(ServerError::ValidationError(format!(
@@ -402,15 +404,30 @@ fn fix_add(
     let (kind_str, url, filename, build_command, targets_str) = match &kind {
         PackageKind::Prebuilt { builds } => {
             let build = &builds[0];
-            ("prebuilt", Some(build.url.clone()), Some(build.file_name.clone()), None, build.target.clone())
+            (
+                "prebuilt",
+                Some(build.url.clone()),
+                Some(build.file_name.clone()),
+                None,
+                build.target.clone(),
+            )
         }
-        PackageKind::Source { build, supported_targets, .. } => {
-            ("source", None, None, Some(build.clone()), supported_targets.clone().map(|t| t.join(",")))
-        }
+        PackageKind::Source {
+            build,
+            supported_targets,
+            ..
+        } => (
+            "source",
+            None,
+            None,
+            Some(build.clone()),
+            supported_targets.clone().map(|t| t.join(",")),
+        ),
     };
-    
-    let dependencies_str = serde_json::to_string(&pk_info.dependencies).unwrap_or_else(|_| "{}".to_string());
-    
+
+    let dependencies_str =
+        serde_json::to_string(&pk_info.dependencies).unwrap_or_else(|_| "{}".to_string());
+
     conn.execute(
         "INSERT INTO Packages (name, version, kind, url, hash, filename, build_command, description, entry, dependencies, author, signature, targets)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
@@ -448,14 +465,20 @@ fn fix_del(obj: &Del, conn: &rusqlite::Connection) -> ServerResult<()> {
     let version = match &obj.version {
         Some(v) => v.clone(),
         None => {
-            let mut stmt = conn.prepare("SELECT version FROM Packages WHERE name = ? ORDER BY version ASC").map_err(|e| ServerError::ValidationError(format!("Database error: {e}")))?;
-            let versions_iter = stmt.query_map([&obj.project_name], |row| row.get(0)).unwrap();
+            let mut stmt = conn
+                .prepare("SELECT version FROM Packages WHERE name = ? ORDER BY version ASC")
+                .map_err(|e| ServerError::ValidationError(format!("Database error: {e}")))?;
+            let versions_iter = stmt
+                .query_map([&obj.project_name], |row| row.get(0))
+                .unwrap();
             let mut versions: Vec<String> = Vec::new();
-            for v in versions_iter {
-                if let Ok(val) = v { versions.push(val); }
+            for val in versions_iter.flatten() {
+                versions.push(val);
             }
             if versions.is_empty() {
-                return Err(ServerError::Core(CoreError::PackageNotFound(obj.project_name.clone())));
+                return Err(ServerError::Core(CoreError::PackageNotFound(
+                    obj.project_name.clone(),
+                )));
             }
             if versions.len() > 1 {
                 return Err(ServerError::ValidationError(format!(
@@ -467,7 +490,11 @@ fn fix_del(obj: &Del, conn: &rusqlite::Connection) -> ServerResult<()> {
             versions[0].clone()
         }
     };
-    conn.execute("DELETE FROM Packages WHERE name = ? AND version = ?", [&obj.project_name, &version]).map_err(|e| ServerError::ValidationError(format!("Database delete error: {e}")))?;
+    conn.execute(
+        "DELETE FROM Packages WHERE name = ? AND version = ?",
+        [&obj.project_name, &version],
+    )
+    .map_err(|e| ServerError::ValidationError(format!("Database delete error: {e}")))?;
     println!(
         "Package '{}@{}' removed successfully.",
         obj.project_name, version
@@ -588,7 +615,7 @@ mod tests {
 
         init_git_repo(&project_src);
         init_hash_sign_for_build(&project_src, &keys_dir, "demo-pkg", "alice", "v1 build");
-                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute(
             "CREATE TABLE IF NOT EXISTS Packages (
                 name TEXT NOT NULL,
@@ -607,7 +634,8 @@ mod tests {
                 PRIMARY KEY (name, version)
             )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
@@ -670,7 +698,13 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
-                let count: i64 = conn.query_row("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", [], |row| row.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM Packages WHERE name = 'demo-pkg'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1, "the rejected v2 must not be added");
 
         std::fs::remove_dir_all(&project_src).ok();
@@ -693,7 +727,7 @@ mod tests {
 
         init_git_repo(&project_src);
         init_hash_sign_for_build(&project_src, &keys_dir, "demo-pkg", "alice", "v1 build");
-                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute(
             "CREATE TABLE IF NOT EXISTS Packages (
                 name TEXT NOT NULL,
@@ -712,7 +746,8 @@ mod tests {
                 PRIMARY KEY (name, version)
             )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
@@ -765,9 +800,21 @@ mod tests {
         )
         .unwrap();
 
-                let count: i64 = conn.query_row("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", [], |row| row.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM Packages WHERE name = 'demo-pkg'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 2);
-                let latest_author: String = conn.query_row("SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+        let latest_author: String = conn
+            .query_row(
+                "SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(latest_author, "alice");
 
         std::fs::remove_dir_all(&project_src).ok();
@@ -793,7 +840,7 @@ mod tests {
         package_info.signature = Some("0".repeat(128));
         JsonStorage::to_json(&package_info, &info_path).unwrap();
 
-                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute(
             "CREATE TABLE IF NOT EXISTS Packages (
                 name TEXT NOT NULL,
@@ -812,7 +859,8 @@ mod tests {
                 PRIMARY KEY (name, version)
             )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let err = fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
@@ -827,7 +875,13 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
-                let count: i64 = conn.query_row("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", [], |row| row.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM Packages WHERE name = 'demo-pkg'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0);
 
         std::fs::remove_dir_all(&project_src).ok();
@@ -1051,7 +1105,7 @@ mod tests {
             "cargo build --release",
         );
 
-                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute(
             "CREATE TABLE IF NOT EXISTS Packages (
                 name TEXT NOT NULL,
@@ -1070,7 +1124,8 @@ mod tests {
                 PRIMARY KEY (name, version)
             )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let add = Add {
             project_name: "demo-pkg".to_string(),
             kind: AddKind::Build {
@@ -1080,7 +1135,13 @@ mod tests {
         };
         fix_add(&add, &conn, &project_src, &keys_dir).unwrap();
 
-        let latest_author: String = conn.query_row("SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+        let latest_author: String = conn
+            .query_row(
+                "SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(latest_author, "alice");
         let (kind, build_command, hash): (String, Option<String>, Option<String>) = conn.query_row("SELECT kind, build_command, hash FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
         assert_eq!(kind, "source");
@@ -1115,7 +1176,7 @@ mod tests {
             "cargo build --release",
         );
 
-                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute(
             "CREATE TABLE IF NOT EXISTS Packages (
                 name TEXT NOT NULL,
@@ -1134,7 +1195,8 @@ mod tests {
                 PRIMARY KEY (name, version)
             )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let err = fix_add(
             &Add {
                 project_name: "demo-pkg".to_string(),
@@ -1151,7 +1213,13 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
-                let count: i64 = conn.query_row("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", [], |row| row.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM Packages WHERE name = 'demo-pkg'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0);
 
         std::fs::remove_dir_all(&project_src).ok();
@@ -1178,7 +1246,7 @@ mod tests {
         let keys_dir = project_src.join("keys");
         init_hash_sign(&project_src, &keys_dir, "demo-pkg", "alice");
 
-                let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute(
             "CREATE TABLE IF NOT EXISTS Packages (
                 name TEXT NOT NULL,
@@ -1197,7 +1265,8 @@ mod tests {
                 PRIMARY KEY (name, version)
             )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let add = Add {
             project_name: "demo-pkg".to_string(),
             kind: AddKind::Url {
@@ -1209,7 +1278,13 @@ mod tests {
         let err = fix_add(&add, &conn, &project_src, &keys_dir).unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
         assert!(
-            conn.query_row::<i64, _, _>("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", [], |row| row.get(0)).unwrap() == 0,
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM Packages WHERE name = 'demo-pkg'",
+                [],
+                |row| row.get(0)
+            )
+            .unwrap()
+                == 0,
             "a rejected url must not leave a partial entry in RepoInfo"
         );
 
@@ -1767,5 +1842,4 @@ mod tests {
             _ => panic!("expected Prebuilt"),
         }
     }
-
 }
