@@ -178,6 +178,7 @@ mod tests {
             None,
             None,
             None,
+            true,
         )
     }
 

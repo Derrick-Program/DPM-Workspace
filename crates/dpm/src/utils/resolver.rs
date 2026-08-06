@@ -488,6 +488,7 @@ mod tests {
             dependencies,
             None,
             None,
+            true,
         )
     }
 

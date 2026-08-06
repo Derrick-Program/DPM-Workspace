@@ -512,6 +512,7 @@ impl ActionInfo {
                     dependencies_obj,
                     author,
                     signature,
+                    true,
                 ))
                 .await?;
         }
@@ -1684,6 +1685,7 @@ mod install_resolved_tests {
             None,
             Some("alice".to_string()),
             Some(tampered_signature),
+            true,
         );
         let all_packages = vec![pkg];
         let is = vec![(None, "tampered-pkg".to_string(), None)];
@@ -1743,6 +1745,7 @@ mod install_resolved_tests {
             None,
             Some("alice".to_string()),
             Some(signature),
+            true,
         );
         let all_packages = vec![pkg];
         let is = vec![(None, "valid-pkg".to_string(), None)];
@@ -1785,6 +1788,7 @@ mod install_resolved_tests {
             None,
             None,
             None,
+            true,
         );
         let all_packages = vec![pkg];
         let is = vec![(None, "unsigned-pkg".to_string(), None)];
@@ -1815,6 +1819,7 @@ mod install_resolved_tests {
             None,
             None,
             None,
+            true,
         );
         let pkg2 = DbPackage::new(
             "official",
@@ -1830,6 +1835,7 @@ mod install_resolved_tests {
             None,
             None,
             None,
+            true,
         );
 
         ctx.info_db.insert_available(pkg1).await.unwrap();

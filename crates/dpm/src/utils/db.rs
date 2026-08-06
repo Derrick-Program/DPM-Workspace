@@ -4,9 +4,9 @@ use fs2::FileExt;
 use std::fs::File;
 
 /// Single source of truth for the `LocalRepo` column list — every query below
-/// builds its SELECT/INSERT column list from this, and `row_to_package` looks
-/// columns up by name, so reordering columns here can't silently desync a
-/// query string from the decode logic.
+/// builds its SELECT/INSERT column list from this, and `decode_common_fields`
+/// looks columns up by name, so reordering columns here can't silently
+/// desync a query string from the decode logic.
 const COLUMNS: &str =
     "source, name, version, kind, url, hash, filename, build_command, description, entry, dependencies, author, signature";
 
@@ -88,6 +88,7 @@ impl Db {
                     dependencies TEXT,
                     author TEXT,
                     signature TEXT,
+                    explicit INTEGER NOT NULL DEFAULT 1,
                     installed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (name)
                 );"#,
@@ -95,6 +96,24 @@ impl Db {
             )
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+            // `CREATE TABLE IF NOT EXISTS` above is a no-op on a DB file that
+            // already has `InstalledPackages` from before this column
+            // existed, so it wouldn't add `explicit` to it. This `ALTER
+            // TABLE` covers that upgrade path; on a brand-new DB (or one
+            // already migrated) the column already exists, so SQLite/turso
+            // reports "duplicate column name", which we treat as success.
+            if let Err(e) = conn
+                .execute(
+                    "ALTER TABLE InstalledPackages ADD COLUMN explicit INTEGER NOT NULL DEFAULT 1",
+                    (),
+                )
+                .await
+            {
+                let msg = e.to_string();
+                if !msg.to_lowercase().contains("duplicate column") {
+                    return Err(ClientError::Core(DatabaseError(msg)));
+                }
+            }
             conn.execute(
                 r#"CREATE TABLE IF NOT EXISTS installed_files (
                     package_name TEXT NOT NULL,
@@ -109,7 +128,7 @@ impl Db {
         Ok(())
     }
 
-    fn row_to_package(row: turso::Row) -> ClientResult<DbPackage> {
+    fn decode_common_fields(row: &turso::Row) -> ClientResult<DbPackage> {
         // Index derived from `COLUMNS` itself (not a hand-copied number), so
         // reordering the column list here can't silently desync the query
         // string from the decode below — turso's `Row` carries no column
@@ -152,7 +171,34 @@ impl Db {
             dependencies: dependencies_json.and_then(|json| serde_json::from_str(&json).ok()),
             author: get_opt_text("author")?,
             signature: get_opt_text("signature")?,
+            // Meaningless for `AvailablePackages` rows (no such column there);
+            // `row_to_installed_package` below overwrites this with the real
+            // value for `InstalledPackages` rows.
+            explicit: true,
         })
+    }
+
+    fn row_to_available_package(row: turso::Row) -> ClientResult<DbPackage> {
+        Self::decode_common_fields(&row)
+    }
+
+    fn row_to_installed_package(row: turso::Row) -> ClientResult<DbPackage> {
+        let mut pkg = Self::decode_common_fields(&row)?;
+        // `explicit` isn't part of the shared `COLUMNS` list (it doesn't
+        // exist on `AvailablePackages`), so it's always the column
+        // immediately after everything `COLUMNS` lists — callers select it
+        // as `SELECT {COLUMNS}, explicit FROM InstalledPackages`.
+        let explicit_idx = COLUMNS.split(", ").count();
+        let explicit_value = row
+            .get_value(explicit_idx)
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+            .as_integer()
+            .copied()
+            .ok_or_else(|| {
+                ClientError::Core(DatabaseError("column explicit is not an integer".to_string()))
+            })?;
+        pkg.explicit = explicit_value != 0;
+        Ok(pkg)
     }
 
     pub async fn insert_available(&self, pkg: DbPackage) -> ClientResult<()> {
@@ -203,7 +249,7 @@ impl Db {
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
         {
-            packages.push(Self::row_to_package(row)?);
+            packages.push(Self::row_to_available_package(row)?);
         }
         Ok(packages)
     }
@@ -229,7 +275,7 @@ impl Db {
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
         {
-            Some(row) => Ok(Some(Self::row_to_package(row)?)),
+            Some(row) => Ok(Some(Self::row_to_available_package(row)?)),
             None => Ok(None),
         }
     }
@@ -249,7 +295,7 @@ impl Db {
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
         {
-            packages.push(Self::row_to_package(row)?);
+            packages.push(Self::row_to_available_package(row)?);
         }
         Ok(packages)
     }
@@ -286,10 +332,26 @@ impl Db {
             to_value(dependencies_json),
             to_value(pkg.author),
             to_value(pkg.signature),
+            turso::Value::Integer(if pkg.explicit { 1 } else { 0 }),
         ];
         conn.execute(
             &format!(
-                "INSERT INTO InstalledPackages ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"
+                "INSERT INTO InstalledPackages ({COLUMNS}, explicit) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
+                 ON CONFLICT(name) DO UPDATE SET \
+                    source = excluded.source, \
+                    version = excluded.version, \
+                    kind = excluded.kind, \
+                    url = excluded.url, \
+                    hash = excluded.hash, \
+                    filename = excluded.filename, \
+                    build_command = excluded.build_command, \
+                    description = excluded.description, \
+                    entry = excluded.entry, \
+                    dependencies = excluded.dependencies, \
+                    author = excluded.author, \
+                    signature = excluded.signature, \
+                    explicit = CASE WHEN InstalledPackages.explicit = 1 THEN 1 ELSE excluded.explicit END"
             ),
             params,
         )
@@ -298,10 +360,24 @@ impl Db {
         Ok(())
     }
 
+    /// Parameterized delete for a single `InstalledPackages` row by name —
+    /// used by `uninstall()`/`autoremove()` instead of hand-formatting SQL
+    /// with the package name spliced directly into the query string.
+    pub async fn delete_installed(&self, name: &str) -> ClientResult<()> {
+        let conn = self.connect().await?;
+        conn.execute("DELETE FROM InstalledPackages WHERE name = ?1", [name])
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        Ok(())
+    }
+
     pub async fn read_all(&self) -> ClientResult<Vec<DbPackage>> {
         let conn = self.connect().await?;
         let mut rows = conn
-            .query(&format!("SELECT {COLUMNS} FROM InstalledPackages"), ())
+            .query(
+                &format!("SELECT {COLUMNS}, explicit FROM InstalledPackages"),
+                (),
+            )
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
         let mut packages = Vec::new();
@@ -310,7 +386,7 @@ impl Db {
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
         {
-            packages.push(Self::row_to_package(row)?);
+            packages.push(Self::row_to_installed_package(row)?);
         }
         Ok(packages)
     }
@@ -325,7 +401,7 @@ impl Db {
         let mut rows = conn
             .query(
                 &format!(
-                    "SELECT {COLUMNS} FROM InstalledPackages WHERE source = ?1 AND name = ?2 AND version = ?3"
+                    "SELECT {COLUMNS}, explicit FROM InstalledPackages WHERE source = ?1 AND name = ?2 AND version = ?3"
                 ),
                 [source, name, version],
             )
@@ -336,7 +412,7 @@ impl Db {
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
         {
-            Some(row) => Ok(Some(Self::row_to_package(row)?)),
+            Some(row) => Ok(Some(Self::row_to_installed_package(row)?)),
             None => Ok(None),
         }
     }
@@ -415,7 +491,7 @@ impl Db {
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
         {
-            packages.push(Self::row_to_package(row)?);
+            packages.push(Self::row_to_available_package(row)?);
         }
         Ok(packages)
     }
@@ -472,7 +548,7 @@ impl Db {
             .await
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
         {
-            Some(row) => Ok(Some(Self::row_to_package(row)?)),
+            Some(row) => Ok(Some(Self::row_to_available_package(row)?)),
             None => Ok(None),
         }
     }

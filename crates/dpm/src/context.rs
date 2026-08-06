@@ -262,7 +262,7 @@ mod tests {
             .db
             .insert(crate::DbPackage::new(
                 "official", "foo", "1.0.0", "prebuilt", None, None, None, None, "", None, None,
-                None, None,
+                None, None, true,
             ))
             .await
             .unwrap();

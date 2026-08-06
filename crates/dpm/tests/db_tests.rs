@@ -34,6 +34,7 @@ mod db_tests {
             None,
             None,
             None,
+            true,
         )
     }
 
@@ -219,6 +220,91 @@ mod db_tests {
         assert!(db.drop_table("invalid table").await.is_err());
 
         db.drop_table("InstalledPackages").await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_explicit_flag_persists_and_defaults_true() -> TestResult {
+        let dir = tempdir()?;
+        let db = setup_db(dir.path(), false).await?;
+        let mut pkg = sample_pkg("official", "0.1.0");
+        pkg.explicit = false;
+        db.insert(pkg).await?;
+
+        let all = db.read_all().await?;
+        assert_eq!(all.len(), 1);
+        assert!(!all[0].explicit);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reinstall_same_name_upserts_and_sticky_promotes_explicit() -> TestResult {
+        let dir = tempdir()?;
+        let db = setup_db(dir.path(), false).await?;
+
+        let mut auto_pkg = sample_pkg("official", "0.1.0");
+        auto_pkg.explicit = false;
+        db.insert(auto_pkg).await?;
+
+        let mut upgraded = sample_pkg("official", "0.2.0");
+        upgraded.explicit = false;
+        db.insert(upgraded).await?;
+        let after_auto_reinstall = db.read_all().await?;
+        assert_eq!(
+            after_auto_reinstall.len(),
+            1,
+            "same name must upsert, not duplicate"
+        );
+        assert_eq!(after_auto_reinstall[0].version, "0.2.0");
+        assert!(!after_auto_reinstall[0].explicit);
+
+        let mut explicit_reinstall = sample_pkg("official", "0.2.0");
+        explicit_reinstall.explicit = true;
+        db.insert(explicit_reinstall).await?;
+        let after_explicit_reinstall = db.read_all().await?;
+        assert!(
+            after_explicit_reinstall[0].explicit,
+            "a direct re-install must promote explicit"
+        );
+
+        let mut dep_only_reinstall = sample_pkg("official", "0.3.0");
+        dep_only_reinstall.explicit = false;
+        db.insert(dep_only_reinstall).await?;
+        let after_dep_only_reinstall = db.read_all().await?;
+        assert!(
+            after_dep_only_reinstall[0].explicit,
+            "explicit must never auto-demote back to false"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_run_migrations_is_idempotent_for_the_explicit_column() -> TestResult {
+        let dir = tempdir()?;
+        let db = setup_db(dir.path(), false).await?;
+        // A second run must not error on `ALTER TABLE ... ADD COLUMN explicit`
+        // finding the column already there — this is what protects DBs that
+        // already had `InstalledPackages` before this column existed.
+        db.run_migrations(false).await?;
+        db.insert(sample_pkg("official", "0.1.0")).await?;
+        assert!(db.read_all().await?[0].explicit);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete_installed_removes_only_the_named_package() -> TestResult {
+        let dir = tempdir()?;
+        let db = setup_db(dir.path(), false).await?;
+        db.insert(sample_pkg("official", "0.1.0")).await?;
+        let mut other = sample_pkg("official", "0.1.0");
+        other.name = "other_pkg".to_string();
+        db.insert(other).await?;
+
+        db.delete_installed("test_pkg").await?;
+
+        let remaining = db.read_all().await?;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "other_pkg");
         Ok(())
     }
 

@@ -22,6 +22,12 @@ pub struct DbPackage {
     pub author: Option<String>,
     /// `dpm-server sign` 簽出來的 hex 簽章,簽的是 `hash` 欄位。
     pub signature: Option<String>,
+    /// 使用者是否在命令列直接指名安裝這個套件(`true`),還是被別的套件的
+    /// `dependencies` 拉進來裝的(`false`)。只對 `InstalledPackages` 有意義
+    /// ——`AvailablePackages`(遠端索引快取)裡的列這個欄位恆為 `true`,沒有
+    /// 實際語意,純粹因為 `DbPackage` 是兩張表共用的資料結構。`dpm autoremove`
+    /// 靠這個欄位判斷哪些已裝套件可以被當成孤兒依賴清掉。
+    pub explicit: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -40,6 +46,7 @@ impl DbPackage {
         dependencies: Option<Vec<Dependency>>,
         author: Option<String>,
         signature: Option<String>,
+        explicit: bool,
     ) -> Self {
         DbPackage {
             source: source.to_owned(),
@@ -55,6 +62,7 @@ impl DbPackage {
             dependencies,
             author,
             signature,
+            explicit,
         }
     }
 
