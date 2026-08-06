@@ -160,6 +160,16 @@ impl ActionInfo {
             .await
     }
 
+    /// Whether `name` was directly requested on this command's `is` list —
+    /// i.e. deserves `explicit = true` when written to `InstalledPackages`,
+    /// as opposed to being pulled in only because another package's
+    /// `dependencies` resolved to it. `is` only ever contains what the user
+    /// actually typed (see `parse_mine`), never the transitive closure
+    /// `resolve_install_set` adds on top.
+    fn is_directly_requested(is: &[ParsedInstallSpec], name: &str) -> bool {
+        is.iter().any(|(_, n, _)| n == name)
+    }
+
     /// `install_resolved` 的實際邏輯,「這個來源是不是官方來源」透過
     /// `is_official` 閉包傳入,而不是在這裡直接比對 `OFFICIAL_REPO_URL`——
     /// 理由跟 `sync_source_inner` 一樣:讓測試能在不打真網路的情況下強制
@@ -175,6 +185,7 @@ impl ActionInfo {
             let mut key_cache: HashMap<String, VerifyingKey> = HashMap::new();
             for (source_alias, name, version) in resolved {
                 let pkg = name.as_str();
+                let explicit = Self::is_directly_requested(is, pkg);
                 let repo_package_info = all_packages
                     .iter()
                     .find(|p| p.source == source_alias && p.name == name && p.version == version)
@@ -235,8 +246,14 @@ impl ActionInfo {
                     .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
 
                 if matches!(repo_package_info.kind()?, PackageKind::Source { .. }) {
-                    self.install_source_package(pkg, &source_alias, repo_package_info, &staging)
-                        .await?;
+                    self.install_source_package(
+                        pkg,
+                        &source_alias,
+                        repo_package_info,
+                        explicit,
+                        &staging,
+                    )
+                    .await?;
                     if self.verbose {
                         println!("  {}", "Installed!".green());
                     }
@@ -270,10 +287,9 @@ impl ActionInfo {
                     staging.path(),
                     &self.system_controller,
                 )?;
-                self.ctx
-                    .db
-                    .insert(repo_package_info.clone())
-                    .await?;
+                let mut installed_pkg = repo_package_info.clone();
+                installed_pkg.explicit = explicit;
+                self.ctx.db.insert(installed_pkg).await?;
                 self.ctx
                     .db
                     .record_installed_files(pkg, &tracked_files)
@@ -320,6 +336,7 @@ impl ActionInfo {
         pkg: &str,
         source_alias: &str,
         repo_package_info: &DbPackage,
+        explicit: bool,
         staging: &tempfile::TempDir,
     ) -> ClientResult<()> {
         if source_alias != "official" {
@@ -385,10 +402,9 @@ impl ActionInfo {
             staging.path(),
             &self.system_controller,
         )?;
-        self.ctx
-            .db
-            .insert(repo_package_info.clone())
-            .await?;
+        let mut installed_pkg = repo_package_info.clone();
+        installed_pkg.explicit = explicit;
+        self.ctx.db.insert(installed_pkg).await?;
         self.ctx
             .db
             .record_installed_files(pkg, &tracked_files)
@@ -1855,5 +1871,13 @@ mod install_resolved_tests {
         // Empty query should list all available packages without error
         let action_empty = ActionInfo::new(ctx, vec![], false, setting);
         assert!(action_empty.search().await.is_ok());
+    }
+
+    #[test]
+    fn is_directly_requested_matches_by_name_only() {
+        let is: Vec<ParsedInstallSpec> =
+            vec![(Some("official".to_string()), "foo".to_string(), None)];
+        assert!(ActionInfo::is_directly_requested(&is, "foo"));
+        assert!(!ActionInfo::is_directly_requested(&is, "bar"));
     }
 }
