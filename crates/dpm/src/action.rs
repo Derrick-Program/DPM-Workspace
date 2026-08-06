@@ -1,8 +1,8 @@
 use crate::utils::privilege::{chown_dir_to_sudo_user, drop_privileges_for_build};
 use crate::{
-    clone_package_source, fetch_and_verify_prebuilt, parse_package_spec, place_package,
-    resolve_install_set, system::*, unzip_file, ClientError, ClientResult, Context, DbPackage,
-    Setting, Source, SourceAction,
+    clone_package_source, fetch_and_verify_prebuilt, find_orphans, parse_package_spec,
+    place_package, resolve_install_set, system::*, unzip_file, ClientError, ClientResult, Context,
+    DbPackage, Setting, Source, SourceAction,
 };
 use colored::Colorize;
 use dpm_core::CoreError;
@@ -632,45 +632,10 @@ impl ActionInfo {
         }
         if !is.is_empty() {
             for (_, pkg, _) in is {
-                let pre_rm_location = self.ctx.install_dir.join(&pkg);
-                let opt_link = self.ctx.opt_dir().join(&pkg);
-
                 if self.verbose {
                     println!("{}\n\n  {}", pkg.on_green(), "Removing...".red());
                 }
-
-                // 1. O(1) DB Manifest Cleanup: remove every file/symlink registered in DB
-                let recorded_files = self
-                    .ctx
-                    .db
-                    .get_installed_files(&pkg)
-                    .await
-                    .unwrap_or_default();
-                for file_path in recorded_files {
-                    let p = Path::new(&file_path);
-                    if p.exists() || p.symlink_metadata().is_ok() {
-                        let _ = remove_file(p).or_else(|_| remove_dir_all(p));
-                    }
-                }
-
-                // 2. Remove main install dir Software/<pkg> & opt/<pkg>
-                if opt_link.exists() || opt_link.symlink_metadata().is_ok() {
-                    let _ = remove_file(&opt_link);
-                }
-                if pre_rm_location.exists() {
-                    let _ = remove_dir_all(&pre_rm_location);
-                }
-
-                // 3. Fallback cleanup for direct bin link if present
-                let direct_bin_link = self.ctx.bin_dir.join(&pkg);
-                if direct_bin_link.exists() || direct_bin_link.symlink_metadata().is_ok() {
-                    let _ = remove_file(&direct_bin_link);
-                }
-
-                // 4. Remove manifest rows from DB
-                self.ctx.db.remove_installed_files(&pkg).await?;
-                self.ctx.db.execute_query(&format!("DELETE FROM InstalledPackages WHERE name = '{}'", pkg)).await?;
-
+                self.remove_installed_package(&pkg).await?;
                 if self.verbose {
                     println!("  {}", "Done".green());
                 }
@@ -682,6 +647,66 @@ impl ActionInfo {
                 self.system_action.uninstall_package(&pkg)?;
             }
         }
+
+        let remaining = self
+            .ctx
+            .db
+            .read_all()
+            .await
+            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
+        let orphans = find_orphans(&remaining);
+        if !orphans.is_empty() {
+            let names: Vec<&str> = orphans.iter().map(|p| p.name.as_str()).collect();
+            println!(
+                "{} {} package(s) are now orphaned: {}. Run 'dpm autoremove' to remove them.",
+                "Note:".yellow(),
+                orphans.len(),
+                names.join(", ")
+            );
+        }
+        Ok(())
+    }
+
+    /// Removes `pkg`'s on-disk files (per the `installed_files` manifest,
+    /// plus the install-dir/opt-link/bin-link fallback paths it also cleans
+    /// up) and its `InstalledPackages`/`installed_files` DB rows. Shared by
+    /// `uninstall()` and `autoremove()` so there is exactly one place that
+    /// knows how to fully remove an installed package.
+    async fn remove_installed_package(&self, pkg: &str) -> ClientResult<()> {
+        let pre_rm_location = self.ctx.install_dir.join(pkg);
+        let opt_link = self.ctx.opt_dir().join(pkg);
+
+        // 1. O(1) DB Manifest Cleanup: remove every file/symlink registered in DB
+        let recorded_files = self
+            .ctx
+            .db
+            .get_installed_files(pkg)
+            .await
+            .unwrap_or_default();
+        for file_path in recorded_files {
+            let p = Path::new(&file_path);
+            if p.exists() || p.symlink_metadata().is_ok() {
+                let _ = remove_file(p).or_else(|_| remove_dir_all(p));
+            }
+        }
+
+        // 2. Remove main install dir Software/<pkg> & opt/<pkg>
+        if opt_link.exists() || opt_link.symlink_metadata().is_ok() {
+            let _ = remove_file(&opt_link);
+        }
+        if pre_rm_location.exists() {
+            let _ = remove_dir_all(&pre_rm_location);
+        }
+
+        // 3. Fallback cleanup for direct bin link if present
+        let direct_bin_link = self.ctx.bin_dir.join(pkg);
+        if direct_bin_link.exists() || direct_bin_link.symlink_metadata().is_ok() {
+            let _ = remove_file(&direct_bin_link);
+        }
+
+        // 4. Remove manifest rows from DB
+        self.ctx.db.remove_installed_files(pkg).await?;
+        self.ctx.db.delete_installed(pkg).await?;
         Ok(())
     }
 
@@ -1879,5 +1904,40 @@ mod install_resolved_tests {
             vec![(Some("official".to_string()), "foo".to_string(), None)];
         assert!(ActionInfo::is_directly_requested(&is, "foo"));
         assert!(!ActionInfo::is_directly_requested(&is, "bar"));
+    }
+
+    #[tokio::test]
+    async fn uninstall_prints_hint_and_leaves_orphan_installed_for_autoremove_to_handle()
+    -> ClientResult<()> {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        let leaf = DbPackage::new(
+            "official", "leaf", "1.0.0", "prebuilt", None, None, None, None, "", None, None,
+            None, None, false,
+        );
+        ctx.db.insert(leaf).await.unwrap();
+
+        let root_pkg = DbPackage::new(
+            "official", "root", "1.0.0", "prebuilt", None, None, None, None, "", None,
+            Some(vec![dpm_core::Dependency {
+                name: "leaf".to_string(),
+                version: "*".to_string(),
+            }]),
+            None, None, true,
+        );
+        ctx.db.insert(root_pkg).await.unwrap();
+
+        let action = ActionInfo::new(ctx.clone(), vec!["root".to_string()], false, Setting::default());
+        action.uninstall().await?;
+
+        // "root" is gone, "leaf" is still installed (autoremove's job, not
+        // uninstall's) but now orphaned.
+        let remaining = ctx.db.read_all().await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "leaf");
+        assert!(!remaining[0].explicit);
+        assert!(find_orphans(&remaining).iter().any(|p| p.name == "leaf"));
+        Ok(())
     }
 }
