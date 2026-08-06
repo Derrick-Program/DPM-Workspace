@@ -53,7 +53,7 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 
 ## 功能缺口 — 跟一般套件管理器(apt/dnf/pacman/brew/cargo)比較(2026-08-06)
 
-- [ ] **Autoremove / orphan 清理** — 沒有。裝了套件當某東西的依賴,那東西被移除後不會自動變孤兒清單,也沒有指令能一次清掉。優先做這個,套件管理器基本盤。
+- [x] **Autoremove / orphan 清理** — 已實作。`InstalledPackages` 新增 `explicit` 欄位區分主動安裝 vs 依賴拉進來,`find_orphans`(`crates/dpm/src/utils/orphan.rs`)遞迴找出不再被引用的 auto 套件,`dpm autoremove` 指令清除,`dpm uninstall` 收尾會印孤兒提示。設計見 `docs/superpowers/specs/2026-08-06-autoremove-design.md`。
 
 - [ ] **`list --outdated`** — `List` 指令沒有這個 flag,想知道哪些套件能升級只能整批硬跑 `upgrade`。
 
