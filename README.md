@@ -54,6 +54,7 @@ dpm --system list -l
 | `list [-l\|--list] [-s\|--list-sys]` | `l`, `li`, `ll`       | 列出套件(`-l` 已安裝、`-s` 系統套件管理員已安裝)                  | `dpm list -l`                                            |
 | `upgrade <name...>`                | `U`, `UP`, `grade`    | 升級套件                                                              | `dpm upgrade foo`                                        |
 | `upgrade-self`                     | `US`, `UPS`, `grades` | 升級 dpm 自己                                                         | `dpm upgrade-self`                                       |
+| `autoremove`                       | `ar`, `auto`          | 移除自動安裝、現在已無人依賴的孤兒相依套件                            | `dpm autoremove`                                         |
 | `source add <URL> [--as ALIAS]`    | -                           | 新增套件來源(repo_url 需為 git 可 clone 的遠端;alias 預設取 URL host) | `dpm source add https://github.com/org/repo --as myrepo` |
 | `source remove <ALIAS>`            | -                           | 移除套件來源(連同該 source 在本地 DB 的所有套件紀錄)                  | `dpm source remove myrepo`                               |
 | `source list`                      | -                           | 列出目前設定的所有套件來源                                            | `dpm source list`                                        |

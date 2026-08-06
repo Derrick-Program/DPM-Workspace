@@ -61,5 +61,6 @@ cargo build -p DPM --release
 - **`dpm install <pkg>`**：安全校驗雜湊並安裝指定套件。
 - **`dpm uninstall <pkg>`**：移除本機已安裝的套件。
 - **`dpm list`**：列出本機已安裝的 DPM 套件與 Host OS 套件。
+- **`dpm autoremove`**（別名 `ar`、`auto`）：移除自動安裝、現在已無人依賴的孤兒相依套件。
 - **`dpm upgrade-self`**：使用 `zipsign` 安全驗證並自自我更新 `dpm` 至最新版本。
 - **`dpm source list/add/remove`**：管理遠端套件庫來源 (Sources)。

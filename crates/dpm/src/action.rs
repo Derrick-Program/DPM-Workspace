@@ -155,9 +155,12 @@ impl ActionInfo {
         &self,
         all_packages: &[DbPackage],
         is: &[ParsedInstallSpec],
+        promote: bool,
     ) -> ClientResult<()> {
-        self.install_resolved_with_gate(all_packages, is, |repo_url| repo_url == OFFICIAL_REPO_URL)
-            .await
+        self.install_resolved_with_gate(all_packages, is, promote, |repo_url| {
+            repo_url == OFFICIAL_REPO_URL
+        })
+        .await
     }
 
     /// Whether `name` was directly requested on this command's `is` list —
@@ -178,14 +181,34 @@ impl ActionInfo {
         &self,
         all_packages: &[DbPackage],
         is: &[ParsedInstallSpec],
+        promote: bool,
         is_official: impl Fn(&str) -> bool,
     ) -> ClientResult<()> {
         if !is.is_empty() {
+            // Only `install()` (`promote=true`) is allowed to sticky-promote
+            // a directly-requested dependency to `explicit=true`. `upgrade()`
+            // (`promote=false`) must not — "refresh this" isn't "I now own
+            // this" — so it needs to know what was already installed before
+            // this call to tell "brand-new via upgrade" apart from "already
+            // an auto-installed dependency". Skip the read entirely on the
+            // `install()` path since the set is never consulted there.
+            let already_installed: std::collections::HashSet<String> = if promote {
+                std::collections::HashSet::new()
+            } else {
+                self.ctx
+                    .db
+                    .read_all()
+                    .await?
+                    .into_iter()
+                    .map(|p| p.name)
+                    .collect()
+            };
             let resolved = resolve_install_set(all_packages, is)?;
             let mut key_cache: HashMap<String, VerifyingKey> = HashMap::new();
             for (source_alias, name, version) in resolved {
                 let pkg = name.as_str();
-                let explicit = Self::is_directly_requested(is, pkg);
+                let explicit = Self::is_directly_requested(is, pkg)
+                    && (promote || !already_installed.contains(pkg));
                 let repo_package_info = all_packages
                     .iter()
                     .find(|p| p.source == source_alias && p.name == name && p.version == version)
@@ -315,7 +338,7 @@ impl ActionInfo {
                 "Package '{}' not found in local cache. Please run 'dpm update' to refresh package index.", pkg
             ))));
         }
-        self.install_resolved(&all_packages, &is).await?;
+        self.install_resolved(&all_packages, &is, true).await?;
         Ok(())
     }
 
@@ -862,7 +885,7 @@ impl ActionInfo {
             println!("{}", "No packages available for upgrade.".yellow());
             return Ok(());
         }
-        self.install_resolved(&all_packages, &is).await?;
+        self.install_resolved(&all_packages, &is, false).await?;
         if !isnot.is_empty() {
             for pkg in isnot {
                 self.system_action.upgrade_package(&pkg)?;
@@ -1769,7 +1792,7 @@ mod install_resolved_tests {
         let is = vec![(None, "tampered-pkg".to_string(), None)];
 
         let err = action
-            .install_resolved_with_gate(&all_packages, &is, |_| true)
+            .install_resolved_with_gate(&all_packages, &is, true, |_| true)
             .await
             .unwrap_err();
         let msg = err.to_string();
@@ -1829,7 +1852,7 @@ mod install_resolved_tests {
         let is = vec![(None, "valid-pkg".to_string(), None)];
 
         let err = action
-            .install_resolved_with_gate(&all_packages, &is, |_| true)
+            .install_resolved_with_gate(&all_packages, &is, true, |_| true)
             .await
             .unwrap_err();
         let msg = err.to_string();
@@ -1872,7 +1895,7 @@ mod install_resolved_tests {
         let is = vec![(None, "unsigned-pkg".to_string(), None)];
 
         let err = action
-            .install_resolved_with_gate(&all_packages, &is, |_| true)
+            .install_resolved_with_gate(&all_packages, &is, true, |_| true)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("INSECURE"));
@@ -1941,6 +1964,49 @@ mod install_resolved_tests {
             vec![(Some("official".to_string()), "foo".to_string(), None)];
         assert!(ActionInfo::is_directly_requested(&is, "foo"));
         assert!(!ActionInfo::is_directly_requested(&is, "bar"));
+    }
+
+    #[tokio::test]
+    async fn upgrade_does_not_promote_an_already_auto_installed_dependency() -> ClientResult<()> {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        let auto_dep = DbPackage::new(
+            "official", "dep", "1.0.0", "prebuilt", None, None, None, None, "", None, None, None,
+            None, false,
+        );
+        ctx.db.insert(auto_dep).await.unwrap();
+
+        // Simulates what upgrade() would do: "dep" is directly named in
+        // `is`, but promote=false because this call represents an upgrade,
+        // not a fresh install. `install_resolved_with_gate` will fail to
+        // resolve "dep" from an empty `all_packages` (no network/download
+        // needed to prove the point) — we're not testing the full
+        // resolve+download path here, only that `is_directly_requested`'s
+        // promotion math is gated by `promote`.
+        let already_installed: std::collections::HashSet<String> = ctx
+            .db
+            .read_all()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        let is: Vec<ParsedInstallSpec> =
+            vec![(Some("official".to_string()), "dep".to_string(), None)];
+        let explicit_if_upgrade = ActionInfo::is_directly_requested(&is, "dep")
+            && (false || !already_installed.contains("dep"));
+        let explicit_if_install = ActionInfo::is_directly_requested(&is, "dep")
+            && (true || !already_installed.contains("dep"));
+        assert!(
+            !explicit_if_upgrade,
+            "upgrade must not promote an already-installed auto dependency"
+        );
+        assert!(
+            explicit_if_install,
+            "install must still promote a directly-requested package"
+        );
+        Ok(())
     }
 
     #[tokio::test]

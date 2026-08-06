@@ -12,6 +12,8 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 - [x] **`system.rs::init()` 的 `repo_url`/`repo_info` 沒寫回 `config.json`** — 在 TOML layered config 重構中,`init_first_run` 已透過 `TomlStorage::to_toml(&default_setting, &config_path)` 將包含 `repo_url` 與 `repo_info` 的預設設定寫入 `config.toml`,並新增單元測試驗證持久化與 re-read 正常。
 - [x] **`PackageManager::Unknown` 與 unsupported OS 全部用 `panic!`** — `PackageManager::command_for` 與 `system_command_runner` 全數採用回傳 `ClientResult<()>` 錯誤變體 (`ClientError::SystemError`),移除任何潛在 `panic!`,並移除路徑處的 `.unwrap()`。
 
+- [ ] **`place_package` 的 entry-point symlink 建立不是 idempotent 的** — `crates/dpm/src/utils/placer.rs`。重裝一個已安裝的套件(或把一個已安裝套件升格成 explicit,會重跑同一條 install 路徑)在 `bin/<pkg-name>` entry convention 下會因為 symlink 已存在而報 "File exists" 失敗。autoremove 分支 Task 6 手動 E2E 驗證時發現,已確認跟該分支無關,故未在該分支修。
+
 ## P2 — 安全 / 硬化
 
 - [x] **`Db::execute_query`/`drop_table`/`clear_table` 用 `format!` 組 SQL,table 名稱直接字串插入** — 在 `crates/dpm/src/utils/db.rs` 新增 `validate_table_name` 嚴格白名單檢查（僅允許 `"LocalRepo"`、`"schema_migrations"` 或合法識別碼）,在 `drop_table`/`clear_table` 執行前驗證 table 名稱,並補上單元測試。
