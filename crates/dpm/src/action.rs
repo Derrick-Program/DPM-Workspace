@@ -667,6 +667,33 @@ impl ActionInfo {
         Ok(())
     }
 
+    pub async fn autoremove(&self) -> ClientResult<()> {
+        let installed = self
+            .ctx
+            .db
+            .read_all()
+            .await
+            .map_err(|e| ClientError::Core(CoreError::DatabaseError(e.to_string())))?;
+        let orphans = find_orphans(&installed);
+        if orphans.is_empty() {
+            println!("{}", "No orphaned packages found.".yellow());
+            return Ok(());
+        }
+
+        println!("{}", "==> Orphaned packages:".green().bold());
+        for pkg in &orphans {
+            println!("  {} v{}", pkg.name.bold(), pkg.version);
+        }
+        for pkg in &orphans {
+            if self.verbose {
+                println!("{}\n\n  {}", pkg.name.as_str().on_green(), "Removing...".red());
+            }
+            self.remove_installed_package(&pkg.name).await?;
+        }
+        println!("{} {} package(s) removed.", "Done:".green(), orphans.len());
+        Ok(())
+    }
+
     /// Removes `pkg`'s on-disk files (per the `installed_files` manifest,
     /// plus the install-dir/opt-link/bin-link fallback paths it also cleans
     /// up) and its `InstalledPackages`/`installed_files` DB rows. Shared by
@@ -1938,6 +1965,50 @@ mod install_resolved_tests {
         assert_eq!(remaining[0].name, "leaf");
         assert!(!remaining[0].explicit);
         assert!(find_orphans(&remaining).iter().any(|p| p.name == "leaf"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn autoremove_removes_orphans_and_leaves_explicit_packages_alone() -> ClientResult<()> {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        let orphan = DbPackage::new(
+            "official", "orphan", "1.0.0", "prebuilt", None, None, None, None, "", None, None,
+            None, None, false,
+        );
+        ctx.db.insert(orphan).await.unwrap();
+
+        let kept = DbPackage::new(
+            "official", "kept", "1.0.0", "prebuilt", None, None, None, None, "", None, None,
+            None, None, true,
+        );
+        ctx.db.insert(kept).await.unwrap();
+
+        let action = ActionInfo::new(ctx.clone(), vec![], false, Setting::default());
+        action.autoremove().await?;
+
+        let remaining = ctx.db.read_all().await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "kept");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn autoremove_is_a_no_op_when_nothing_is_orphaned() -> ClientResult<()> {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        let kept = DbPackage::new(
+            "official", "kept", "1.0.0", "prebuilt", None, None, None, None, "", None, None,
+            None, None, true,
+        );
+        ctx.db.insert(kept).await.unwrap();
+
+        let action = ActionInfo::new(ctx.clone(), vec![], false, Setting::default());
+        action.autoremove().await?;
+
+        assert_eq!(ctx.db.read_all().await.unwrap().len(), 1);
         Ok(())
     }
 }

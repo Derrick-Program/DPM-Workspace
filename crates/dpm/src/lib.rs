@@ -100,6 +100,11 @@ pub async fn entry(ctx: Context, config: Cli) -> ClientResult<()> {
                 .upgrade_self()
                 .await?
         }
+        Some(Commands::Autoremove { verbose }) => {
+            ActionInfo::new(ctx.clone(), vec![], verbose, setting_config)
+                .autoremove()
+                .await?
+        }
         Some(Commands::Source { action }) => {
             ActionInfo::new(ctx.clone(), vec![], false, setting_config)
                 .source(action)

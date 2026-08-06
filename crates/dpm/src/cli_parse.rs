@@ -87,6 +87,12 @@ pub enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    /// Remove orphaned dependencies (installed automatically, no longer needed)
+    #[command(visible_aliases = ["ar", "auto"])]
+    Autoremove {
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Manage package sources
     #[command(subcommand_required = true, arg_required_else_help = true)]
     Source {
