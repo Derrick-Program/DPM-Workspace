@@ -428,7 +428,10 @@ impl SystemAction {
     }
 
     pub fn primary_manager_name(&self) -> &'static str {
-        self.package_managers.first().map(|m| m.name()).unwrap_or("System Package Manager")
+        self.package_managers
+            .first()
+            .map(|m| m.name())
+            .unwrap_or("System Package Manager")
     }
 
     pub fn new(verbose: bool) -> Self {
@@ -460,13 +463,22 @@ impl SystemAction {
         }
     }
 
-    fn run_verb_for(&self, manager: PackageManager, verb: Verb, package_name: Option<&str>) -> ClientResult<()> {
+    fn run_verb_for(
+        &self,
+        manager: PackageManager,
+        verb: Verb,
+        package_name: Option<&str>,
+    ) -> ClientResult<()> {
         let (command, mut args) = manager.command_for(verb)?;
         if let Some(name) = package_name {
             args.push(name);
         }
         let err = match package_name {
-            Some(name) => format!("Failed to {} package with {}: {name}", verb.description(), manager.name()),
+            Some(name) => format!(
+                "Failed to {} package with {}: {name}",
+                verb.description(),
+                manager.name()
+            ),
             None => format!("Failed to {} with {}", verb.description(), manager.name()),
         };
         self.command_runner(command, args, &err)
@@ -480,7 +492,9 @@ impl SystemAction {
                 Err(e) => last_err = Some(e),
             }
         }
-        Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
+        Err(last_err.unwrap_or_else(|| {
+            ClientError::SystemError("no package manager available".to_string())
+        }))
     }
 
     pub fn update_package_index(&self) -> ClientResult<()> {
@@ -495,7 +509,9 @@ impl SystemAction {
         if success {
             Ok(())
         } else {
-            Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
+            Err(last_err.unwrap_or_else(|| {
+                ClientError::SystemError("no package manager available".to_string())
+            }))
         }
     }
 
@@ -507,7 +523,9 @@ impl SystemAction {
                 Err(e) => last_err = Some(e),
             }
         }
-        Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
+        Err(last_err.unwrap_or_else(|| {
+            ClientError::SystemError("no package manager available".to_string())
+        }))
     }
 
     pub fn search_package(&self, package_name: &str) -> ClientResult<()> {
@@ -516,7 +534,10 @@ impl SystemAction {
         for &pm in &self.package_managers {
             if pm != PackageManager::Unknown {
                 use colored::Colorize;
-                println!("==> Host OS Package Manager ({}): Searching for '{package_name}'...", pm.name().cyan());
+                println!(
+                    "==> Host OS Package Manager ({}): Searching for '{package_name}'...",
+                    pm.name().cyan()
+                );
             }
             match self.run_verb_for(pm, Verb::Search, Some(package_name)) {
                 Ok(()) => success = true,
@@ -526,7 +547,9 @@ impl SystemAction {
         if success {
             Ok(())
         } else {
-            Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
+            Err(last_err.unwrap_or_else(|| {
+                ClientError::SystemError("no package manager available".to_string())
+            }))
         }
     }
 
@@ -538,7 +561,9 @@ impl SystemAction {
                 Err(e) => last_err = Some(e),
             }
         }
-        Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
+        Err(last_err.unwrap_or_else(|| {
+            ClientError::SystemError("no package manager available".to_string())
+        }))
     }
 
     pub fn list_packages(&self) -> ClientResult<()> {
@@ -547,7 +572,10 @@ impl SystemAction {
         for &pm in &self.package_managers {
             if pm != PackageManager::Unknown {
                 use colored::Colorize;
-                println!("==> Host OS Package Manager ({}) Installed Packages:", pm.name().green().bold());
+                println!(
+                    "==> Host OS Package Manager ({}) Installed Packages:",
+                    pm.name().green().bold()
+                );
             }
             match self.run_verb_for(pm, Verb::List, None) {
                 Ok(()) => success = true,
@@ -557,7 +585,9 @@ impl SystemAction {
         if success {
             Ok(())
         } else {
-            Err(last_err.unwrap_or_else(|| ClientError::SystemError("no package manager available".to_string())))
+            Err(last_err.unwrap_or_else(|| {
+                ClientError::SystemError("no package manager available".to_string())
+            }))
         }
     }
 

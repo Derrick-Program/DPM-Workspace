@@ -1,5 +1,5 @@
-use DPM::{ActionInfo, Context, Setting, Source};
 use std::net::TcpListener;
+use DPM::{ActionInfo, Context, Setting, Source};
 
 fn serve_bytes_once(bytes: Vec<u8>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -105,7 +105,10 @@ async fn test_full_network_update_and_cache_query() {
 
     // 1. Sync remote RepoInfo.db over network HTTP into LocalRepoInfo.db
     let update_res = action.update().await;
-    assert!(update_res.is_ok(), "HTTP network update of RepoInfo.db must succeed");
+    assert!(
+        update_res.is_ok(),
+        "HTTP network update of RepoInfo.db must succeed"
+    );
 
     // 2. Read LocalRepoInfo.db available packages
     let available = ctx.info_db.read_available().await.unwrap();

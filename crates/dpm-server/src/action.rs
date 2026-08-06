@@ -412,7 +412,8 @@ async fn fix_add(
             };
 
             let commit = source_repo_commit_hash(&path)?;
-            let recomputed_hash = dpm_core::hash_bytes(format!("{effective_build}\n{commit}").as_bytes());
+            let recomputed_hash =
+                dpm_core::hash_bytes(format!("{effective_build}\n{commit}").as_bytes());
             if recomputed_hash != pk_info.hash {
                 return Err(ServerError::ValidationError(format!(
                     "build command {effective_build:?} (hash {recomputed_hash}) does not match {}'s signed hash ({}) — run `dpm-server hash --build`/`sign` again after the build command changes",
@@ -761,7 +762,15 @@ mod tests {
             .query("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", ())
             .await
             .unwrap();
-        let count: i64 = *rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_integer().unwrap();
+        let count: i64 = *rows
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get_value(0)
+            .unwrap()
+            .as_integer()
+            .unwrap();
         assert_eq!(count, 1, "the rejected v2 must not be added");
 
         std::fs::remove_dir_all(&project_src).ok();
@@ -841,14 +850,34 @@ mod tests {
             .query("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", ())
             .await
             .unwrap();
-        let count: i64 = *rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_integer().unwrap();
+        let count: i64 = *rows
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get_value(0)
+            .unwrap()
+            .as_integer()
+            .unwrap();
         assert_eq!(count, 2);
 
         let mut rows = conn
-            .query("SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", ())
+            .query(
+                "SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1",
+                (),
+            )
             .await
             .unwrap();
-        let latest_author: String = rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_text().unwrap().to_string();
+        let latest_author: String = rows
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get_value(0)
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .to_string();
         assert_eq!(latest_author, "alice");
 
         std::fs::remove_dir_all(&project_src).ok();
@@ -893,7 +922,15 @@ mod tests {
             .query("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", ())
             .await
             .unwrap();
-        let count: i64 = *rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_integer().unwrap();
+        let count: i64 = *rows
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get_value(0)
+            .unwrap()
+            .as_integer()
+            .unwrap();
         assert_eq!(count, 0);
 
         std::fs::remove_dir_all(&project_src).ok();
@@ -1128,10 +1165,22 @@ mod tests {
         fix_add(&add, &conn, &project_src, &keys_dir).await.unwrap();
 
         let mut rows = conn
-            .query("SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1", ())
+            .query(
+                "SELECT author FROM Packages WHERE name = 'demo-pkg' ORDER BY version DESC LIMIT 1",
+                (),
+            )
             .await
             .unwrap();
-        let latest_author: String = rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_text().unwrap().to_string();
+        let latest_author: String = rows
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get_value(0)
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .to_string();
         assert_eq!(latest_author, "alice");
 
         let mut rows = conn
@@ -1140,8 +1189,14 @@ mod tests {
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let kind: String = row.get_value(0).unwrap().as_text().unwrap().to_string();
-        let build_command: Option<String> = row.get_value(1).ok().and_then(|v| v.as_text().map(|s| s.to_string()));
-        let hash: Option<String> = row.get_value(2).ok().and_then(|v| v.as_text().map(|s| s.to_string()));
+        let build_command: Option<String> = row
+            .get_value(1)
+            .ok()
+            .and_then(|v| v.as_text().map(|s| s.to_string()));
+        let hash: Option<String> = row
+            .get_value(2)
+            .ok()
+            .and_then(|v| v.as_text().map(|s| s.to_string()));
         assert_eq!(kind, "source");
         assert_eq!(build_command.unwrap(), "cargo build --release");
         assert!(hash.is_some());
@@ -1181,7 +1236,10 @@ mod tests {
         fix_add(&add, &conn, &project_src, &keys_dir).await.unwrap();
 
         let mut rows = conn
-            .query("SELECT kind, build_command FROM Packages WHERE name = 'demo-pkg' LIMIT 1", ())
+            .query(
+                "SELECT kind, build_command FROM Packages WHERE name = 'demo-pkg' LIMIT 1",
+                (),
+            )
             .await
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
@@ -1234,7 +1292,15 @@ mod tests {
             .query("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", ())
             .await
             .unwrap();
-        let count: i64 = *rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_integer().unwrap();
+        let count: i64 = *rows
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get_value(0)
+            .unwrap()
+            .as_integer()
+            .unwrap();
         assert_eq!(count, 0);
 
         std::fs::remove_dir_all(&project_src).ok();
@@ -1263,13 +1329,23 @@ mod tests {
                 target: None,
             },
         };
-        let err = fix_add(&add, &conn, &project_src, &keys_dir).await.unwrap_err();
+        let err = fix_add(&add, &conn, &project_src, &keys_dir)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ServerError::ValidationError(_)));
         let mut rows = conn
             .query("SELECT count(*) FROM Packages WHERE name = 'demo-pkg'", ())
             .await
             .unwrap();
-        let count: i64 = *rows.next().await.unwrap().unwrap().get_value(0).unwrap().as_integer().unwrap();
+        let count: i64 = *rows
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get_value(0)
+            .unwrap()
+            .as_integer()
+            .unwrap();
         assert_eq!(
             count, 0,
             "a rejected url must not leave a partial entry in RepoInfo"

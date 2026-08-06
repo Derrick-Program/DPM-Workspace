@@ -195,7 +195,9 @@ impl Db {
             .as_integer()
             .copied()
             .ok_or_else(|| {
-                ClientError::Core(DatabaseError("column explicit is not an integer".to_string()))
+                ClientError::Core(DatabaseError(
+                    "column explicit is not an integer".to_string(),
+                ))
             })?;
         pkg.explicit = explicit_value != 0;
         Ok(pkg)

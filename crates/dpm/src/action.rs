@@ -627,7 +627,10 @@ impl ActionInfo {
     pub async fn uninstall(&self) -> ClientResult<()> {
         let (_, is, isnot) = self.parsed_packages(false).await?;
         if is.is_empty() && isnot.is_empty() {
-            println!("{}", "No matching installed packages found to uninstall.".yellow());
+            println!(
+                "{}",
+                "No matching installed packages found to uninstall.".yellow()
+            );
             return Ok(());
         }
         if !is.is_empty() {
@@ -643,7 +646,10 @@ impl ActionInfo {
         }
         if !isnot.is_empty() {
             for pkg in isnot {
-                println!("==> Host OS Package Manager ({}): Removing '{pkg}'...", self.system_action.primary_manager_name().cyan());
+                println!(
+                    "==> Host OS Package Manager ({}): Removing '{pkg}'...",
+                    self.system_action.primary_manager_name().cyan()
+                );
                 self.system_action.uninstall_package(&pkg)?;
             }
         }
@@ -686,7 +692,11 @@ impl ActionInfo {
         }
         for pkg in &orphans {
             if self.verbose {
-                println!("{}\n\n  {}", pkg.name.as_str().on_green(), "Removing...".red());
+                println!(
+                    "{}\n\n  {}",
+                    pkg.name.as_str().on_green(),
+                    "Removing...".red()
+                );
             }
             self.remove_installed_package(&pkg.name).await?;
         }
@@ -1934,28 +1944,44 @@ mod install_resolved_tests {
     }
 
     #[tokio::test]
-    async fn uninstall_prints_hint_and_leaves_orphan_installed_for_autoremove_to_handle()
-    -> ClientResult<()> {
+    async fn uninstall_prints_hint_and_leaves_orphan_installed_for_autoremove_to_handle(
+    ) -> ClientResult<()> {
         let root = tempfile::tempdir().unwrap();
         let ctx = Context::for_test(root.path()).await.unwrap();
 
         let leaf = DbPackage::new(
-            "official", "leaf", "1.0.0", "prebuilt", None, None, None, None, "", None, None,
-            None, None, false,
+            "official", "leaf", "1.0.0", "prebuilt", None, None, None, None, "", None, None, None,
+            None, false,
         );
         ctx.db.insert(leaf).await.unwrap();
 
         let root_pkg = DbPackage::new(
-            "official", "root", "1.0.0", "prebuilt", None, None, None, None, "", None,
+            "official",
+            "root",
+            "1.0.0",
+            "prebuilt",
+            None,
+            None,
+            None,
+            None,
+            "",
+            None,
             Some(vec![dpm_core::Dependency {
                 name: "leaf".to_string(),
                 version: "*".to_string(),
             }]),
-            None, None, true,
+            None,
+            None,
+            true,
         );
         ctx.db.insert(root_pkg).await.unwrap();
 
-        let action = ActionInfo::new(ctx.clone(), vec!["root".to_string()], false, Setting::default());
+        let action = ActionInfo::new(
+            ctx.clone(),
+            vec!["root".to_string()],
+            false,
+            Setting::default(),
+        );
         action.uninstall().await?;
 
         // "root" is gone, "leaf" is still installed (autoremove's job, not
@@ -1980,8 +2006,8 @@ mod install_resolved_tests {
         ctx.db.insert(orphan).await.unwrap();
 
         let kept = DbPackage::new(
-            "official", "kept", "1.0.0", "prebuilt", None, None, None, None, "", None, None,
-            None, None, true,
+            "official", "kept", "1.0.0", "prebuilt", None, None, None, None, "", None, None, None,
+            None, true,
         );
         ctx.db.insert(kept).await.unwrap();
 
@@ -2000,8 +2026,8 @@ mod install_resolved_tests {
         let ctx = Context::for_test(root.path()).await.unwrap();
 
         let kept = DbPackage::new(
-            "official", "kept", "1.0.0", "prebuilt", None, None, None, None, "", None, None,
-            None, None, true,
+            "official", "kept", "1.0.0", "prebuilt", None, None, None, None, "", None, None, None,
+            None, true,
         );
         ctx.db.insert(kept).await.unwrap();
 

@@ -52,8 +52,20 @@ mod tests {
             )
         };
         DbPackage::new(
-            "official", name, "1.0.0", "prebuilt", None, None, None, None, "", None,
-            dependencies, None, None, explicit,
+            "official",
+            name,
+            "1.0.0",
+            "prebuilt",
+            None,
+            None,
+            None,
+            None,
+            "",
+            None,
+            dependencies,
+            None,
+            None,
+            explicit,
         )
     }
 
