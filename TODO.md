@@ -22,6 +22,10 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
       `crates/dpm/src/utils/system.rs:54-70`
       兩個平台裝完之後檔案的擁有者/群組邏輯不同,值得重新設計成一致的模型(例如都用「執行者所屬使用者 + 一個固定群組」)。
 
+- [ ] **第三方 source(非 official)沒有簽章驗證**
+      `crates/dpm/src/action.rs`(`verify_official_signature` 只在 `is_official(&source.repo_url)` 為真時呼叫)
+      `author`/`signature` 欄位對第三方 source 直接忽略,裝這種來源的套件純粹信任來源本身。刻意延後,不是漏掉——2026-08-06 討論過:程式碼面成本低(`verify_hash_signature`/`validate_author_id` 已是 `dpm-core` 通用函式),但缺信任錨(third-party key 若也從同一個不受信任的 URL 抓,等於自己簽自己,防不了來源被竄改)。要做的話得先有 pin 機制(例如 `dpm source add --pubkey <fingerprint>`,TOFU 或手動 pin)。目前沒有第三方 source 生態,先不做,等真的有人開始發布非官方 source 再重新評估。
+
 ## P2 — 重複 / 死碼
 
 - [x] **`zip_folder`/`unzip_file`/`read_file_from_zip` 在 client 和 server 各自複製一份,簽名還不一樣** — 已收斂進 `dpm-core/src/zip_file.rs` 單一實作,client/server 都呼叫同一份。
@@ -46,6 +50,24 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 - [x] **`crates/dpm/README.md` 幾乎是空的** — 已擴充(64 行);`crates/dpm-server/README.md` 也已補上 `hash`/`build`/`fix`/`init` 的步驟細節(158 行)。
 
 ---
+
+## 功能缺口 — 跟一般套件管理器(apt/dnf/pacman/brew/cargo)比較(2026-08-06)
+
+- [ ] **Autoremove / orphan 清理** — 沒有。裝了套件當某東西的依賴,那東西被移除後不會自動變孤兒清單,也沒有指令能一次清掉。優先做這個,套件管理器基本盤。
+
+- [ ] **`list --outdated`** — `List` 指令沒有這個 flag,想知道哪些套件能升級只能整批硬跑 `upgrade`。
+
+- [ ] **Pin / hold 版本** — `dpm update`/`upgrade` 沒辦法鎖某個套件不被升級。
+
+- [ ] **Downgrade / 版本回退** — 沒有使用者可下的指令。`placer.rs` 的 rollback 只是單次安裝失敗時的原子復原保護(裝到一半失敗換回舊的),不是「切回上一版」的功能。
+
+- [ ] **`info`/`show` 詳細資訊指令** — CLI 目前只有 Install/Update/Uninstall/Search/List/Upgrade/UpgradeSelf/Source/GenConfig,沒有單看一個套件完整 metadata(license/size/dependencies/changelog)的指令。
+
+- [ ] **本機離線檔案安裝**(類似 `dpkg -i local.deb`)— 沒有,一定要透過 source 索引才能裝,無法直接指定本機一個 zip/檔案安裝。
+
+- [ ] **Conflicts / Provides / 虛擬套件** — `dpm-core::PackageVersionInfo` 沒有這幾個欄位,沒法表達「A 跟 B 互斥」或「這個套件提供 X 這個介面」,多套件同提供一功能時無法選替代。
+
+- [ ] **第三方 source(非 official)簽章驗證** — 見上方 P2 安全項目,刻意延後,需要先有 key pin 機制。
 
 ## 已完成
 
