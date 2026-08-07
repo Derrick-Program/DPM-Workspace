@@ -1,8 +1,8 @@
 use crate::utils::privilege::{chown_dir_to_sudo_user, drop_privileges_for_build};
 use crate::{
-    clone_package_source, fetch_and_verify_prebuilt, find_orphans, parse_package_spec,
-    place_package, resolve_install_set, system::*, unzip_file, ClientError, ClientResult, Context,
-    DbPackage, Setting, Source, SourceAction,
+    clone_package_source, fetch_and_verify_prebuilt, find_orphans, find_outdated,
+    parse_package_spec, place_package, resolve_install_set, system::*, unzip_file, ClientError,
+    ClientResult, Context, DbPackage, Setting, Source, SourceAction,
 };
 use colored::Colorize;
 use dpm_core::CoreError;
@@ -860,7 +860,10 @@ impl ActionInfo {
         Ok(())
     }
 
-    pub async fn list(&self, sys: bool) -> ClientResult<()> {
+    pub async fn list(&self, sys: bool, outdated: bool) -> ClientResult<()> {
+        if outdated {
+            return self.list_outdated().await;
+        }
         if sys {
             if let Err(e) = self.system_action.list_packages() {
                 println!("Host OS package list error: {e}");
@@ -874,6 +877,31 @@ impl ActionInfo {
                 for pkg in pkgs {
                     println!("  {}", pkg.green());
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// `dpm list --outdated`: compares `InstalledPackages` against the local
+    /// `AvailablePackages` cache (`dpm update`'s snapshot, not a live fetch —
+    /// same convention as `search`) and reports every dpm-managed package
+    /// with a newer version in its own source. See `find_outdated`.
+    async fn list_outdated(&self) -> ClientResult<()> {
+        let installed = self.ctx.db.read_all().await?;
+        let available = self.ctx.info_db.read_available().await?;
+        let outdated = find_outdated(&installed, &available);
+        if outdated.is_empty() {
+            println!("{}", "All DPM packages are up to date.".green());
+        } else {
+            println!("{}", "==> Outdated DPM Packages:".green().bold());
+            for pkg in &outdated {
+                println!(
+                    "  {} {} -> {} ({})",
+                    pkg.name.bold(),
+                    pkg.current,
+                    pkg.latest.green(),
+                    pkg.source.cyan()
+                );
             }
         }
         Ok(())

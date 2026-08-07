@@ -57,7 +57,7 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 
 - [x] **Autoremove / orphan 清理** — 已實作。`InstalledPackages` 新增 `explicit` 欄位區分主動安裝 vs 依賴拉進來,`find_orphans`(`crates/dpm/src/utils/orphan.rs`)遞迴找出不再被引用的 auto 套件,`dpm autoremove` 指令清除,`dpm uninstall` 收尾會印孤兒提示。設計見 `docs/superpowers/specs/2026-08-06-autoremove-design.md`。
 
-- [ ] **`list --outdated`** — `List` 指令沒有這個 flag,想知道哪些套件能升級只能整批硬跑 `upgrade`。
+- [x] **`list --outdated`** — `List` 指令加 `--outdated` flag(跟 `--sys-mgr` 互斥,只查 dpm 自己管的套件)。比對邏輯在 `crates/dpm/src/utils/outdated.rs::find_outdated`:對每個已裝套件,只在它安裝當下的那個 source 內找同名套件的最高 semver 版本(不跨 source 比,避免跟 `resolve_install_set` 一樣要處理 ambiguous source),版本字串解析失敗的項目跳過不影響其他結果。讀的是本地 `AvailablePackages` 快取(`dpm update` 抓下來的那份),不會現查網路,跟 `search` 同慣例。
 
 - [ ] **Pin / hold 版本** — `dpm update`/`upgrade` 沒辦法鎖某個套件不被升級。
 

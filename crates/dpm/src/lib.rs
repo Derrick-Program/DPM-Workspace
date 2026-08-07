@@ -86,9 +86,13 @@ pub async fn entry(ctx: Context, config: Cli) -> ClientResult<()> {
                 .search()
                 .await?
         }
-        Some(Commands::List { verbose, sys_mgr }) => {
+        Some(Commands::List {
+            verbose,
+            sys_mgr,
+            outdated,
+        }) => {
             let info = ActionInfo::new(ctx.clone(), vec![], verbose, setting_config);
-            info.list(sys_mgr).await?;
+            info.list(sys_mgr, outdated).await?;
         }
         Some(Commands::Upgrade { verbose, pn }) => {
             ActionInfo::new(ctx.clone(), pn, verbose, setting_config)
