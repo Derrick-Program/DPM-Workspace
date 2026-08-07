@@ -65,9 +65,29 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 
 - [x] **本機離線檔案安裝**(類似 `apt install ./x.deb`,不是不管依賴的 `dpkg -i`)— `dpm install <路徑>`:`self.pkgs` 每個項目先 `Path::is_file()` 判斷是不是本機檔案,是就走 `install_local_file`。附帶把套件封裝格式副檔名全面從 `.zip` 改成 `.dpm`(`dpm-server` 的 `hash`/`build` 輸出、`crates/dpm-server/Repo/hello.zip`→`hello.dpm` 連同 `RepoInfo.db` 那筆的 `url`/`filename` 一起改、README/CLAUDE.md 文件說明;測試裡當任意 placeholder 用的 `.zip` 字串不動,沒有行為意義)。驗證模型類比 `apt install ./x.deb`:沒有索引項目可比對雜湊/簽章,略過那層,但保留 `packageInfo.json.hash` 對 `hashes.json` 自身紀錄的自洽性檢查(擋壞檔)。依賴自動解析:讀 `packageInfo.json.dependencies`,沒裝的丟進既有 `install_resolved`/pubgrub 管線裝(能裝多層 transitive),解不出來整個安裝失敗,不留半殘狀態。新增 `Db::set_explicit`:因為 `install_resolved` 的 `is`/`promote` 機制只要名字在 `is` 裡就一定標 `explicit=true`(現有架構原本沒有「用 is 裝但標成 auto」這條路),裝完本機套件自己解出來的直接依賴要手動改回 `explicit=false`,`autoremove` 才抓得到孤兒。`InstalledPackages.source="local"` 標記非索引來源。
 
-- [ ] **Conflicts / Provides / 虛擬套件** — `dpm-core::PackageVersionInfo` 沒有這幾個欄位,沒法表達「A 跟 B 互斥」或「這個套件提供 X 這個介面」,多套件同提供一功能時無法選替代。
+- [ ] **Conflicts / Provides / 虛擬套件** — `dpm-core::PackageVersionInfo` 沒有這幾個欄位,沒法表達「A 跟 B 互斥」或「這個套件提供 X 這個介面」,多套件同提供一功能時無法選替代。範圍最大:要動 `dpm-core` schema + `dpm-server` 發布端(`packageInfo.json` 格式)+ client `resolver.rs`(pubgrub provider 建圖要能處理虛擬套件跟互斥約束),三邊都要動。
 
 - [ ] **第三方 source(非 official)簽章驗證** — 見上方 P2 安全項目,刻意延後,需要先有 key pin 機制。
+
+## 功能缺口 — 跟一般套件管理器比較,第二輪(2026-08-07)
+
+- [ ] **反向依賴查詢** — 沒有「誰依賴這個套件」(對應 `apt-cache rdepends`),想確認能不能刪一個套件只能自己土法煉鋼查。
+
+- [ ] **套件群組 / metapackage** — 對應 apt 的 task package、pacman 的 group,一次裝一整包相關套件的能力,dpm 目前沒有這層抽象。
+
+- [ ] **多版本並存** — `InstalledPackages` 的 PRIMARY KEY 是 `name`,同一時間一個套件只能裝一個版本,沒有 nix/brew keg-only 那種側裝多版本的能力。範圍最大:PRIMARY KEY 要從 `name` 改成 `(name, version)`,牽動整個安裝/查詢路徑(`bin/` 的 entry symlink 也得決定「預設用哪個版本」)。
+
+- [ ] **交易紀錄 / rollback** — 沒有 `dnf history undo` 這種東西,升級/移除沒有留 log,想復原只能手動 `dpm install pkg@舊版本`(前提索引還查得到那個版本)。需要新增一張交易紀錄表。
+
+- [ ] **檔案反查套件** — 沒有「這個檔案屬於哪個套件」(對應 `dpkg -S`/`pacman -Qo`)。`installed_files` 表其實已經記錄每個檔案屬於哪個套件,只是沒開放使用者指令查——這個成本相對低,是這輪裡最容易做的。
+
+- [ ] **已裝完整性驗證** — 沒有 `rpm -V`/`dpkg --verify` 那種「裝好之後有沒有被動過手腳」的事後檢查,可以用既有的 `installed_files` + 原本裝的時候記錄的雜湊比對。
+
+- [ ] **確認提示 / `--yes` 旗標** — 追過 code,`install`/`uninstall`/`upgrade` 全部沒有 y/N 確認,也沒有對應的 `--yes`/`-y` 跳過確認旗標。
+
+- [ ] **`--dry-run` / 模擬執行** — 沒有,想知道一個操作會動到什麼(升級哪些套件、拉進哪些依賴)只能真的跑。
+
+- [ ] **postinst/prerm 生命週期腳本** — 套件除了 Source kind 的 `build_command`,沒有任何裝完/移除前後可掛的腳本鉤子。
 
 ## 已完成
 
