@@ -2068,6 +2068,136 @@ mod install_resolved_tests {
         assert!(err.to_string().contains("INSECURE"));
     }
 
+    /// Builds a real zip containing `packageInfo.json` + `hashes.json`,
+    /// mirroring exactly what `dpm-server hash`/`build` produce at publish
+    /// time — same construction as `fetcher::tests::build_fixture_zip`,
+    /// duplicated per that module's own precedent (its `serve_once` is
+    /// likewise copied rather than shared) rather than introducing a
+    /// cross-module test-fixture dependency for one extra call site.
+    /// `body` becomes the entry file's content, so two versions built with
+    /// different bodies can be told apart on disk after install.
+    fn build_fixture_zip(dir: &std::path::Path, version: &str, body: &str) -> (Vec<u8>, String) {
+        use std::collections::HashMap;
+
+        let src = dir.join(format!("src-{version}"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("main"), body).unwrap();
+        let main_hash = dpm_core::hash_file(&src.join("main")).unwrap();
+
+        let hashes_path = src.join("hashes.json");
+        let mut hashes: HashMap<String, String> = HashMap::new();
+        hashes.insert("main".to_string(), main_hash);
+        dpm_core::JsonStorage::to_json(&hashes, &hashes_path).unwrap();
+        let hashes_json_hash = dpm_core::hash_file(&hashes_path).unwrap();
+        hashes.insert("hashes.json".to_string(), hashes_json_hash.clone());
+        dpm_core::JsonStorage::to_json(&hashes, &hashes_path).unwrap();
+
+        let package_info = dpm_core::PackageInfo::new(
+            "downgrade-pkg".to_string(),
+            "main".to_string(),
+            version.to_string(),
+            "test fixture".to_string(),
+            hashes_json_hash,
+            None,
+            None,
+        );
+        dpm_core::JsonStorage::to_json(&package_info, &src.join("packageInfo.json")).unwrap();
+
+        let zip_path = dir.join(format!("pkg-{version}.zip"));
+        crate::zip_folder(&src, &zip_path).unwrap();
+        let zip_hash = dpm_core::hash_file(&zip_path).unwrap();
+        (std::fs::read(&zip_path).unwrap(), zip_hash)
+    }
+
+    /// Traces the real `install()` -> `resolve_install_set` ->
+    /// `swap_into_install_dir` -> `Db::insert` path: none of those compare
+    /// the requested version against what's currently installed, so
+    /// `dpm install pkg@<older>` already downgrades end-to-end today.
+    /// Locks that in with an actual round trip (this is also the first test
+    /// exercising `install()`'s full happy path start to finish, not just
+    /// the pieces around it) so a future change can't silently reintroduce
+    /// a "can't install older than installed" guard without a test noticing.
+    #[tokio::test]
+    async fn install_pkg_at_older_version_downgrades_the_already_installed_one() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+        let setting = Setting {
+            sources: vec![Source {
+                alias: "official".to_string(),
+                repo_url: "http://127.0.0.1:1".to_string(),
+                repo_info: "http://127.0.0.1:1".to_string(),
+            }],
+        };
+
+        let fixtures_dir = tempfile::tempdir().unwrap();
+        let (v2_bytes, v2_hash) = build_fixture_zip(fixtures_dir.path(), "2.0.0", "v2 content\n");
+        let (v1_bytes, v1_hash) = build_fixture_zip(fixtures_dir.path(), "1.0.0", "v1 content\n");
+        let v2_url = serve_once(v2_bytes);
+        let v1_url = serve_once(v1_bytes);
+
+        let row = |version: &str, url: String, hash: String| {
+            DbPackage::new(
+                "official",
+                "downgrade-pkg",
+                version,
+                "prebuilt",
+                Some(url),
+                Some(hash),
+                Some(format!("pkg-{version}.zip")),
+                None,
+                "test fixture",
+                Some("main".to_string()),
+                None,
+                None,
+                None,
+                true,
+            )
+        };
+        ctx.info_db
+            .insert_available(row("2.0.0", v2_url, v2_hash))
+            .await
+            .unwrap();
+        ctx.info_db
+            .insert_available(row("1.0.0", v1_url, v1_hash))
+            .await
+            .unwrap();
+
+        let install_v2 = ActionInfo::new(
+            ctx.clone(),
+            vec!["downgrade-pkg@2.0.0".to_string()],
+            false,
+            setting.clone(),
+        );
+        install_v2.install().await.unwrap();
+        let installed = ctx.db.read_all().await.unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].version, "2.0.0");
+        let entry_path = ctx.install_dir.join("downgrade-pkg").join("main");
+        assert_eq!(
+            std::fs::read_to_string(&entry_path).unwrap(),
+            "v2 content\n"
+        );
+
+        let install_v1 = ActionInfo::new(
+            ctx.clone(),
+            vec!["downgrade-pkg@1.0.0".to_string()],
+            false,
+            setting,
+        );
+        install_v1.install().await.unwrap();
+        let installed = ctx.db.read_all().await.unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(
+            installed[0].version, "1.0.0",
+            "installing an older version must overwrite the InstalledPackages row, not refuse"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&entry_path).unwrap(),
+            "v1 content\n",
+            "the on-disk content must actually be swapped back to the older version"
+        );
+    }
+
     #[tokio::test]
     async fn search_finds_packages_by_partial_name_and_description() {
         let root = tempfile::tempdir().unwrap();
