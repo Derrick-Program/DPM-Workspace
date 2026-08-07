@@ -20,9 +20,7 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 - [x] **`diesel.toml` 的 `migrations_directory` 是分割前留下的絕對路徑,已不存在** — 重新建立 `crates/dpm/diesel.toml` 並將 `migrations_directory` 設定為相對路徑 `"migrations"`。
 - [x] **`diesel.toml` 的 `[print_schema] file` 也是相對路徑錯誤** — 在 `crates/dpm/diesel.toml` 中將 `[print_schema] file` 修正為 `"src/utils/schema.rs"`。
 
-- [ ] **權限模型不一致:Linux `chown -R root:root`,macOS `chown user:admin`**
-      `crates/dpm/src/utils/system.rs:54-70`
-      兩個平台裝完之後檔案的擁有者/群組邏輯不同,值得重新設計成一致的模型(例如都用「執行者所屬使用者 + 一個固定群組」)。
+- [x] **權限模型不一致:Linux `chown -R root:root`,macOS `chown user:admin`** — 2026-08-07 評估過,決定維持現狀,不是漏掉。追過程式碼後發現這不是字串不一致,是提權機制本質不同:Linux `--system` 整個 process 靠 `sudo::escalate_if_needed()` 提權成 root,所有檔案操作(包含 `uninstall()` 用的原始 `fs::remove_file`/`remove_dir_all`,沒走 `system_command_runner`)天生以 root 執行;macOS `--system` process 本身從不整體提權,`chown <user>:admin` 是同一批原始 fs 呼叫在非提權 process 下還能寫入/刪除的必要條件,不是隨便選的。兩個「統一」方向都要牽動比改一行字串更大的範圍且都是實質安全取捨:Linux 改鬆會失去「沒 sudo 完全動不了」的防護,還缺 macOS `admin` 那種通用群組可借用;macOS 改鎖死會讓 `uninstall --system` 直接 Permission Denied,除非把好幾處原始 fs 寫入重新接上逐指令 sudo,還違背 macOS 當初「絕不整包提權」的設計初衷。細節寫進 `docs/CONTRIBUTE.MD`「為什麼不統一成同一種 chown 規則」一節。
 
 - [ ] **第三方 source(非 official)沒有簽章驗證**
       `crates/dpm/src/action.rs`(`verify_official_signature` 只在 `is_official(&source.repo_url)` 為真時呼叫)

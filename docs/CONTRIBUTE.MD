@@ -93,6 +93,19 @@ just install-server   # cargo install --path crates/dpm-server
 
 這個規則對「自己裝的套件」一樣適用——`permision_check()` 掃的是整棵 `MAIN_DIR`(`/opt/com.duacodie/DPM/`),`Software/<pkg>/` 跟 `bin/` 下的東西都在裡面,不是只管 dpm 自己。per-user 模式(不加 `--system`)完全沒有這問題——裝在自己家目錄下,其他使用者本來就進不去。
 
+### 為什麼不統一成同一種 chown 規則(2026-08-07 評估過,維持現狀)
+
+`TODO.md` 曾列過「值得重新設計成一致的模型」,實際追過程式碼後發現這不是單純字串不一致,是兩個平台的提權機制本質不同,統一沒有不動架構的自由選項:
+
+- **Linux `--system`**:`main.rs` 一開始就用 `sudo::escalate_if_needed()` 把整個 process 提權成 root,之後所有檔案操作(包含 `uninstall()`/`remove_installed_package` 用的原始 `std::fs::remove_file`/`remove_dir_all`,沒有走 `system_command_runner`)都是以 root 身份執行,不受檔案擁有者影響。
+- **macOS `--system`**:process 本身從不整體提權,只有透過 `system_command_runner` 包起來的外部指令才會逐條加 `sudo` 前綴。`chown <user>:admin` 不是隨便選的擁有權——它是同一批原始 `fs::remove_file`/`remove_dir_all` 呼叫在「process 本身沒有 root 權限」的前提下還能成功寫入/刪除的**必要條件**。
+
+如果把 Linux 也改成 `chown <invoking-user>:<固定 group>`(讓沒有 sudo 的原安裝者也能管理,對齊 macOS 那種寬鬆模型),Linux 現有的「沒 sudo 完全動不了」這層防護會變鬆,而且 Linux 沒有 macOS `admin` 那種通用管理群組可以直接借用,得額外決定 `sudo`/`wheel` 或自建 `dpm` group(還要處理 group 不存在時的 `groupadd` bootstrap)。
+
+反過來把 macOS 改成對齊 Linux 的鎖死模型(例如 `root:wheel`),`dpm uninstall --system` 會直接 Permission Denied,因為 `remove_installed_package`/`placer.rs` 那些原始 fs 寫入完全沒有走 sudo——要撐住這個方向,得把 install/uninstall 好幾處的原始 fs 呼叫全部重新接上逐指令 sudo,而且會違背 macOS 當初選「逐指令 sudo、絕不整包提權」的設計初衷(縮小 root 權限視窗)。
+
+兩個方向都要牽動比「改一行 chown 目標字串」更大的範圍,且都是實質的安全模型取捨(誰不用 sudo 就能管理已裝套件),不是免費的一致化。目前決定維持現狀:兩平台保留各自的模型,不當 bug 修。
+
 ### 跟 apt/dnf 對比
 
 `apt`/`dnf` 裝的東西也是同一套 Unix 權限模型,只是把整個標準 Linux 目錄結構當共用樹在用:
