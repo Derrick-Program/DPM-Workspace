@@ -34,10 +34,10 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Install Package
+    /// Install a package by name, or a local .dpm archive by path
     #[command(visible_aliases = ["i", "add", "inst"], arg_required_else_help = true)]
     Install {
-        #[arg(value_name = "Package Name", required = true)]
+        #[arg(value_name = "Package name or local .dpm file path", required = true)]
         pn: Vec<String>,
         #[arg(short, long)]
         verbose: bool,

@@ -26,13 +26,13 @@ cargo run -p DPM-Server -- keygen <author_id>
 
 ## 📦 第二步：選擇套件類型並進行發布
 
-DPM 支援兩種套件發布類型：**預建二進位包 (Prebuilt Zip)** 與 **原始碼編譯包 (Source Package)**。
+DPM 支援兩種套件發布類型：**預建二進位包 (Prebuilt DPM)** 與 **原始碼編譯包 (Source Package)**。
 
 ---
 
-### 🅰️ 預建二進位包 (Prebuilt Zip Package) 完整發布流程
+### 🅰️ 預建二進位包 (Prebuilt DPM Package) 完整發布流程
 
-適用於跨平台或已編譯好的二進位可執行檔打包 (如 `.zip` 壓縮包)。
+適用於跨平台或已編譯好的二進位可執行檔打包 (如 `.dpm` 打包檔)。
 
 #### 1. 初始化套件專案 (`init`)
 ```bash
@@ -41,44 +41,44 @@ cargo run -p DPM-Server -- init <pkg_name> <entry_binary> --author <author_id> -
 * 例如：`cargo run -p DPM-Server -- init hello bin/hello --author alice -v 0.1.0 -d "simple universal hello package"`
 * 這會在 `packages/<pkg_name>/` 下建立專案結構與 `packageInfo.json`。
 
-#### 2. 打包二進位 ZIP 檔 (`build`) ⭐ 必須先打包
+#### 2. 打包二進位 DPM 檔 (`build`) ⭐ 必須先打包
 ```bash
 cargo run -p DPM-Server -- build <pkg_name>
 ```
-* 將 `packages/<pkg_name>/` 內容打包至 `Repo/<pkg_name>.zip`。
+* 將 `packages/<pkg_name>/` 內容打包至 `Repo/<pkg_name>.dpm`。
 
-#### 3. 計算 ZIP 檔雜湊值 (`hash`)
+#### 3. 計算 DPM 檔雜湊值 (`hash`)
 ```bash
 cargo run -p DPM-Server -- hash <pkg_name>
 ```
-* `dpm-server` 會偵測到 `Repo/<pkg_name>.zip` 已存在，並直接計算該 Zip 壓縮檔的 Blake3 雜湊值，填入 `packageInfo.json` 的 `"hash"` 欄位。
+* `dpm-server` 會偵測到 `Repo/<pkg_name>.dpm` 已存在，並直接計算該 DPM 打包檔的 Blake3 雜湊值，填入 `packageInfo.json` 的 `"hash"` 欄位。
 
 #### 4. 數位簽署套件 (`sign`)
 ```bash
 cargo run -p DPM-Server -- sign <pkg_name>
 ```
-* 讀取 `keys/<author_id>.priv` 私鑰，對 `packageInfo.json` 裡的 Zip 雜湊值進行 Ed25519 數位簽署，填入 `"signature"` 欄位。
+* 讀取 `keys/<author_id>.priv` 私鑰，對 `packageInfo.json` 裡的 DPM 檔雜湊值進行 Ed25519 數位簽署，填入 `"signature"` 欄位。
 
 #### 5. 校驗並寫入 SQLite 索引庫 (`fix add url`)
 
 * **本地測試 (未 Git Push 前)**：
-  使用 `file://` 指向本機的 Zip 檔：
+  使用 `file://` 指向本機的 DPM 檔：
   ```bash
-  cargo run -p DPM-Server -- fix add <pkg_name> url file://$(pwd)/crates/dpm-server/Repo/<pkg_name>.zip [--target <target_triple>]
+  cargo run -p DPM-Server -- fix add <pkg_name> url file://$(pwd)/crates/dpm-server/Repo/<pkg_name>.dpm [--target <target_triple>]
   ```
 
 * **正式發布 (Git Push 到 GitHub 後)**：
   使用遠端 HTTPS 網址：
   ```bash
-  cargo run -p DPM-Server -- fix add <pkg_name> url https://raw.githubusercontent.com/<user>/<repo>/main/crates/dpm-server/Repo/<pkg_name>.zip [--target <target_triple>]
+  cargo run -p DPM-Server -- fix add <pkg_name> url https://raw.githubusercontent.com/<user>/<repo>/main/crates/dpm-server/Repo/<pkg_name>.dpm [--target <target_triple>]
   ```
-  > 💡 **防錯機制提示**：`fix add url` 在寫入 `RepoInfo.db` 前，會從 URL 下載檔案並比對雜湊是否等於簽署的雜湊。若是 HTTPS 網址，請確保已將最新的 `<pkg_name>.zip` `git push` 上雲端。
+  > 💡 **防錯機制提示**：`fix add url` 在寫入 `RepoInfo.db` 前，會從 URL 下載檔案並比對雜湊是否等於簽署的雜湊。若是 HTTPS 網址，請確保已將最新的 `<pkg_name>.dpm` `git push` 上雲端。
 
 ---
 
 ### 🅱️ 原始碼編譯包 (Source Package) 完整發布流程
 
-適用於需要由 Client 端在安裝時於本機自行編譯的套件 (如 C/C++/Rust 原始碼專案)。**此類型無需打包 Zip 檔**。
+適用於需要由 Client 端在安裝時於本機自行編譯的套件 (如 C/C++/Rust 原始碼專案)。**此類型無需打包 DPM 檔**。
 
 #### 1. 初始化原始碼套件專案 (`init`)
 ```bash
@@ -115,9 +115,9 @@ cargo run -p DPM-Server -- fix add <pkg_name> build "<build_command>" [--targets
 
 ## 📊 發布流程速查表 (Cheat Sheet)
 
-| 步驟 | 預建二進位包 (Prebuilt Zip) | 原始碼編譯包 (Source Package) ⭐ |
+| 步驟 | 預建二進位包 (Prebuilt DPM) | 原始碼編譯包 (Source Package) ⭐ |
 | :--- | :--- | :--- |
-| **1. 專案準備** | `build <pkg>` (產生 `.zip`) | 準備 `src/` 原始碼 |
+| **1. 專案準備** | `build <pkg>` (產生 `.dpm`) | 準備 `src/` 原始碼 |
 | **2. 計算雜湊** | `hash <pkg>` | `hash <pkg> --build "<CMD>"` |
 | **3. 數位簽署** | `sign <pkg>` | `sign <pkg>` |
 | **4. 匯入 DB** | `fix add <pkg> url <URL> [--target <T>]` | `fix add <pkg> build [<CMD>] [--targets <T1,T2>]` |
@@ -132,8 +132,8 @@ Derrick Package Manager Server (DPM-Server)
 Commands:
   keygen <AUTHOR>     產生 Ed25519 作者簽署金鑰對 (keys/<author>.priv 與 keys/<author>.pub)
   init <NAME> <ENTRY> 初始化套件 packageInfo.json 骨架
-  build <NAME>        將 packages/<NAME>/ 打包為 Repo/<NAME>.zip
-  hash <NAME>         計算 Zip 或編譯指令的 Blake3 雜湊值
+  build <NAME>        將 packages/<NAME>/ 打包為 Repo/<NAME>.dpm
+  hash <NAME>         計算 DPM 檔或編譯指令的 Blake3 雜湊值
   sign <NAME>         使用作者私鑰對 packageInfo.json 的雜湊值進行 Ed25519 數位簽署
   fix add <NAME> ...  將已驗證的套件版本寫入 RepoInfo.db
   fix del <NAME>      從 RepoInfo.db 刪除套件版本

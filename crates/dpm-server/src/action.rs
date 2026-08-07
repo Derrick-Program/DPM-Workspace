@@ -69,7 +69,7 @@ pub fn hash(obj: &Hash, project_src: &Path, repo_dir: &Path) -> ServerResult<()>
         let commit = source_repo_commit_hash(&project_path)?;
         dpm_core::hash_bytes(format!("{build_command}\n{commit}").as_bytes())
     } else {
-        let zip_path = repo_dir.join(format!("{}.zip", obj.package_name));
+        let zip_path = repo_dir.join(format!("{}.dpm", obj.package_name));
         if zip_path.exists() {
             // kind: prebuilt,且 `dpm-server build` 已經跑過——直接雜湊那個
             // zip,讓「簽的 hash」等於「fix add 之後 client 會拿去驗證下載
@@ -184,7 +184,7 @@ pub fn build(obj: &Build, project_src: &Path, repo_dir: &Path) -> ServerResult<(
             obj.package_name.clone(),
         )));
     }
-    let zip_file_path = repo_dir.join(format!("{}.zip", obj.package_name));
+    let zip_file_path = repo_dir.join(format!("{}.dpm", obj.package_name));
     zip_folder(&project_path, &zip_file_path)?;
     Ok(())
 }
@@ -1033,7 +1033,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(repo_dir.join("demo-pkg.zip").exists());
+        assert!(repo_dir.join("demo-pkg.dpm").exists());
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -1762,7 +1762,7 @@ mod tests {
             &repo_dir,
         )
         .unwrap();
-        let expected_hash = dpm_core::hash_file(&repo_dir.join("demo-pkg.zip")).unwrap();
+        let expected_hash = dpm_core::hash_file(&repo_dir.join("demo-pkg.dpm")).unwrap();
 
         hash(
             &Hash {

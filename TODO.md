@@ -65,7 +65,7 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 
 - [x] **`info`/`show` 詳細資訊指令** — `dpm info <pkg>...`(別名 `show`),比照 `search`/`uninstall` 的 `Vec<String>` 多名稱慣例。印已裝狀態(版本/來源/explicit)+ description/entry/dependencies/author 簽章狀態 + 本地索引所有 `(source, version)`。`license`/`size`/`changelog` 這幾個欄位資料模型(`PackageVersionInfo`/`DbPackage`)根本沒有,不在範圍內,要做得先改 schema。實作在 `action.rs::info()`,一次讀完 `read_available()`/`read_all()` 在記憶體篩選(精確比對,不像 `search` 模糊比對)。
 
-- [ ] **本機離線檔案安裝**(類似 `dpkg -i local.deb`)— 沒有,一定要透過 source 索引才能裝,無法直接指定本機一個 zip/檔案安裝。
+- [x] **本機離線檔案安裝**(類似 `apt install ./x.deb`,不是不管依賴的 `dpkg -i`)— `dpm install <路徑>`:`self.pkgs` 每個項目先 `Path::is_file()` 判斷是不是本機檔案,是就走 `install_local_file`。附帶把套件封裝格式副檔名全面從 `.zip` 改成 `.dpm`(`dpm-server` 的 `hash`/`build` 輸出、`crates/dpm-server/Repo/hello.zip`→`hello.dpm` 連同 `RepoInfo.db` 那筆的 `url`/`filename` 一起改、README/CLAUDE.md 文件說明;測試裡當任意 placeholder 用的 `.zip` 字串不動,沒有行為意義)。驗證模型類比 `apt install ./x.deb`:沒有索引項目可比對雜湊/簽章,略過那層,但保留 `packageInfo.json.hash` 對 `hashes.json` 自身紀錄的自洽性檢查(擋壞檔)。依賴自動解析:讀 `packageInfo.json.dependencies`,沒裝的丟進既有 `install_resolved`/pubgrub 管線裝(能裝多層 transitive),解不出來整個安裝失敗,不留半殘狀態。新增 `Db::set_explicit`:因為 `install_resolved` 的 `is`/`promote` 機制只要名字在 `is` 裡就一定標 `explicit=true`(現有架構原本沒有「用 is 裝但標成 auto」這條路),裝完本機套件自己解出來的直接依賴要手動改回 `explicit=false`,`autoremove` 才抓得到孤兒。`InstalledPackages.source="local"` 標記非索引來源。
 
 - [ ] **Conflicts / Provides / 虛擬套件** — `dpm-core::PackageVersionInfo` 沒有這幾個欄位,沒法表達「A 跟 B 互斥」或「這個套件提供 X 這個介面」,多套件同提供一功能時無法選替代。
 

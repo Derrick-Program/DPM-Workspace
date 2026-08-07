@@ -1,12 +1,13 @@
 use crate::utils::privilege::{chown_dir_to_sudo_user, drop_privileges_for_build};
 use crate::{
     clone_package_source, fetch_and_verify_prebuilt, find_orphans, find_outdated,
-    parse_package_spec, place_package, resolve_install_set, system::*, unzip_file, ClientError,
-    ClientResult, Context, DbPackage, Setting, Source, SourceAction,
+    parse_package_spec, place_package, read_file_from_zip, resolve_install_set, system::*,
+    unzip_file, ClientError, ClientResult, Context, DbPackage, Hashes, Setting, Source,
+    SourceAction,
 };
 use colored::Colorize;
 use dpm_core::CoreError;
-use dpm_core::{PackageKind, VerifyingKey};
+use dpm_core::{JsonStorage, PackageInfo, PackageKind, VerifyingKey};
 use std::collections::HashMap;
 use std::fs::{remove_dir_all, remove_file};
 use std::path::Path;
@@ -330,7 +331,35 @@ impl ActionInfo {
     }
 
     pub async fn install(&self) -> ClientResult<()> {
-        let (all_packages, is, isnot) = self.parsed_packages(true).await?;
+        // Any `self.pkgs` entry that's an existing file on disk is a local
+        // `.dpm` archive (`dpm install ./foo.dpm`), not a name to resolve
+        // from the index — same "does this look like a path" heuristic
+        // `pip install ./x.whl` uses, no extension sniffing required since
+        // `install_local_file` only cares about the archive's contents.
+        let (local_files, remaining): (Vec<String>, Vec<String>) = self
+            .pkgs
+            .iter()
+            .cloned()
+            .partition(|p| Path::new(p).is_file());
+
+        for path_str in &local_files {
+            self.install_local_file(Path::new(path_str)).await?;
+        }
+
+        if remaining.is_empty() {
+            return Ok(());
+        }
+
+        // A fresh `ActionInfo` scoped to just the index-based names, so
+        // `parsed_packages`/`install_resolved` (which read `self.pkgs`)
+        // never see the local-file entries already handled above.
+        let remote = ActionInfo::new(
+            self.ctx.clone(),
+            remaining,
+            self.verbose,
+            self.setting_config.clone(),
+        );
+        let (all_packages, is, isnot) = remote.parsed_packages(true).await?;
         if !isnot.is_empty() {
             let pkg = &isnot[0];
             println!("Error: Package '{}' not found in local cache. Please run 'dpm update' to refresh package index.", pkg);
@@ -338,7 +367,162 @@ impl ActionInfo {
                 "Package '{}' not found in local cache. Please run 'dpm update' to refresh package index.", pkg
             ))));
         }
-        self.install_resolved(&all_packages, &is, true).await?;
+        remote.install_resolved(&all_packages, &is, true).await?;
+        Ok(())
+    }
+
+    /// `dpm install <path>` for a local `.dpm` archive — the `dpm-server`-
+    /// published analog of `apt install ./x.deb`, not `dpkg -i`: there's no
+    /// index entry to compare against, so the index-hash and signature
+    /// checks `fetch_and_verify_prebuilt` does are skipped entirely (the
+    /// user already has physical possession of the file — that *is* the
+    /// trust boundary here, same as a locally downloaded `.deb`). The
+    /// archive's own internal self-consistency check
+    /// (`packageInfo.json.hash == blake3(hashes.json)`) still runs, to
+    /// catch a corrupted or hand-edited archive.
+    ///
+    /// Unlike `dpkg -i`, missing dependencies are resolved and installed
+    /// automatically through the same `install_resolved` pipeline a normal
+    /// install uses (`promote=false`: they're auto-installed, not
+    /// user-explicit, so `dpm autoremove` can clean them up later if this
+    /// package is ever removed) — a dependency that can't be resolved from
+    /// the configured sources fails the whole install with a clear error,
+    /// it does not leave a half-configured package behind.
+    async fn install_local_file(&self, path: &Path) -> ClientResult<()> {
+        let package_info_str = read_file_from_zip(path, "packageInfo.json").map_err(|e| {
+            ClientError::Core(CoreError::InvalidPackage(format!(
+                "{}: missing packageInfo.json in archive: {e}",
+                path.display()
+            )))
+        })?;
+        let package_info: PackageInfo =
+            JsonStorage::from_str_to(&package_info_str).map_err(|e| {
+                ClientError::Core(CoreError::InvalidPackage(format!(
+                    "{}: invalid packageInfo.json: {e}",
+                    path.display()
+                )))
+            })?;
+        let hashes_str = read_file_from_zip(path, "hashes.json").map_err(|e| {
+            ClientError::Core(CoreError::InvalidPackage(format!(
+                "{}: missing hashes.json in archive: {e}",
+                path.display()
+            )))
+        })?;
+        let package_hash_info: Hashes = JsonStorage::from_str_to(&hashes_str).map_err(|e| {
+            ClientError::Core(CoreError::InvalidPackage(format!(
+                "{}: invalid hashes.json: {e}",
+                path.display()
+            )))
+        })?;
+        let recorded_package_info_hash = package_hash_info.get("hashes.json").ok_or_else(|| {
+            ClientError::Core(CoreError::InvalidPackage(format!(
+                "{}'s hashes.json has no entry for itself",
+                path.display()
+            )))
+        })?;
+        if &package_info.hash != recorded_package_info_hash {
+            return Err(ClientError::Core(CoreError::HashMismatch {
+                expected: package_info.hash.clone(),
+                actual: recorded_package_info_hash.clone(),
+            }));
+        }
+
+        println!(
+            "{}",
+            format!(
+                "Installing {} from local file {} (unverified: no index/signature check)",
+                package_info.package_name,
+                path.display()
+            )
+            .yellow()
+        );
+
+        // Resolve + install whatever this archive depends on that isn't
+        // already installed, same as a normal install would — `apt install
+        // ./x.deb` behavior, not dpkg -i's "leave it broken, fix it
+        // yourself". Dependency version constraints against packages
+        // already installed aren't cross-checked here, matching the same
+        // level of rigor `resolve_install_set` already applies everywhere
+        // else in dpm (it doesn't re-validate already-installed versions
+        // either).
+        let missing: Vec<ParsedInstallSpec> = {
+            let installed = self.ctx.db.read_all().await?;
+            package_info
+                .dependencies
+                .iter()
+                .flatten()
+                .filter(|d| !installed.iter().any(|p| p.name == d.name))
+                .map(|d| (None, d.name.clone(), Some(d.version.clone())))
+                .collect()
+        };
+        if !missing.is_empty() {
+            let all_packages = self.ctx.info_db.read_available().await?;
+            self.install_resolved(&all_packages, &missing, false)
+                .await?;
+            // `install_resolved_with_gate` marks every name in `missing`
+            // explicit=true (it was in `is`, and none of them existed
+            // before this call) — force them back to auto so `autoremove`
+            // can still reclaim them later. See `Db::set_explicit`.
+            for (_, name, _) in &missing {
+                self.ctx.db.set_explicit(name, false).await?;
+            }
+        }
+
+        let staging_root_base = self.ctx.main_dir.join(".staging");
+        std::fs::create_dir_all(&staging_root_base)
+            .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+        let staging = tempfile::Builder::new()
+            .prefix(package_info.package_name.as_str())
+            .tempdir_in(&staging_root_base)
+            .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+        let extracted = staging.path().join("extracted");
+        unzip_file(path, &extracted).map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+
+        let tracked_files = place_package(
+            &package_info.package_name,
+            &extracted,
+            Some(package_info.file_name.as_str()),
+            &self.ctx.install_dir,
+            &self.ctx.bin_dir,
+            staging.path(),
+            &self.system_controller,
+        )?;
+
+        // `source: "local"` marks this as not having come from any
+        // configured index — `dpm info`/`list` show it like any other
+        // installed package, `upgrade` simply never finds a newer version
+        // for it (there's no index entry to compare against).
+        let db_pkg = DbPackage::new(
+            "local",
+            &package_info.package_name,
+            &package_info.version,
+            "prebuilt",
+            Some(format!("file://{}", path.display())),
+            Some(package_info.hash.clone()),
+            path.file_name().and_then(|f| f.to_str()).map(String::from),
+            None,
+            &package_info.description,
+            Some(package_info.file_name.clone()),
+            package_info.dependencies.clone(),
+            None,
+            None,
+            true,
+        );
+        self.ctx.db.insert(db_pkg).await?;
+        self.ctx
+            .db
+            .record_installed_files(&package_info.package_name, &tracked_files)
+            .await?;
+
+        println!(
+            "{}",
+            format!(
+                "{} installed from {}",
+                package_info.package_name,
+                path.display()
+            )
+            .green()
+        );
         Ok(())
     }
 
@@ -2522,5 +2706,230 @@ mod install_resolved_tests {
 
         assert_eq!(ctx.db.read_all().await.unwrap().len(), 1);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod install_local_file_tests {
+    use super::*;
+    use dpm_core::Dependency;
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    fn serve_once(body: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// Builds a real `.dpm` archive (still a plain zip container — only the
+    /// extension is branded) on disk at `dir/<name>.dpm`, with a
+    /// `packageInfo.json`/`hashes.json` pair that's internally
+    /// self-consistent (mirrors `dpm-server hash`/`build`'s real output,
+    /// same construction `install_resolved_tests::build_fixture_zip` uses
+    /// for the remote-fetch path), optionally declaring `dependencies`.
+    fn build_local_dpm_file(
+        dir: &std::path::Path,
+        name: &str,
+        dependencies: Option<Vec<Dependency>>,
+    ) -> std::path::PathBuf {
+        let src = dir.join(format!("src-{name}"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("main"), b"#!/bin/sh\necho hi\n").unwrap();
+        let main_hash = dpm_core::hash_file(&src.join("main")).unwrap();
+
+        let hashes_path = src.join("hashes.json");
+        let mut hashes: HashMap<String, String> = HashMap::new();
+        hashes.insert("main".to_string(), main_hash);
+        JsonStorage::to_json(&hashes, &hashes_path).unwrap();
+        let hashes_json_hash = dpm_core::hash_file(&hashes_path).unwrap();
+        hashes.insert("hashes.json".to_string(), hashes_json_hash.clone());
+        JsonStorage::to_json(&hashes, &hashes_path).unwrap();
+
+        let mut package_info = PackageInfo::new(
+            name.to_string(),
+            "main".to_string(),
+            "1.0.0".to_string(),
+            "local test fixture".to_string(),
+            hashes_json_hash,
+            dependencies,
+            None,
+        );
+        // `PackageInfo::new` always starts `signature: None` (there's no
+        // author key involved in a purely local file) -- explicit for
+        // clarity, this is what makes install_local_file's "no
+        // signature/index verification" path the one under test.
+        package_info.signature = None;
+        JsonStorage::to_json(&package_info, &src.join("packageInfo.json")).unwrap();
+
+        let dpm_path = dir.join(format!("{name}.dpm"));
+        crate::zip_folder(&src, &dpm_path).unwrap();
+        dpm_path
+    }
+
+    #[tokio::test]
+    async fn installs_a_local_file_with_no_dependencies() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        let dpm_path = build_local_dpm_file(root.path(), "standalone", None);
+        let install = ActionInfo::new(
+            ctx.clone(),
+            vec![dpm_path.display().to_string()],
+            false,
+            Setting::default(),
+        );
+        install.install().await.unwrap();
+
+        let installed = ctx.db.read_all().await.unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].name, "standalone");
+        assert_eq!(installed[0].source, "local");
+        assert!(installed[0].explicit);
+        assert!(ctx.install_dir.join("standalone").join("main").exists());
+    }
+
+    /// Builds a fixture archive as *bytes* (rather than
+    /// `build_local_dpm_file`'s on-disk file) so it can be served over the
+    /// local HTTP `serve_once` — this is what a dependency actually
+    /// resolved from the index goes through (`install_resolved` downloads
+    /// it), as opposed to the local file under test which is read straight
+    /// off disk.
+    fn build_remote_fixture_zip(dir: &std::path::Path, name: &str) -> (Vec<u8>, String) {
+        let src = dir.join(format!("remote-src-{name}"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("main"), b"#!/bin/sh\necho dep\n").unwrap();
+        let main_hash = dpm_core::hash_file(&src.join("main")).unwrap();
+
+        let hashes_path = src.join("hashes.json");
+        let mut hashes: HashMap<String, String> = HashMap::new();
+        hashes.insert("main".to_string(), main_hash);
+        JsonStorage::to_json(&hashes, &hashes_path).unwrap();
+        let hashes_json_hash = dpm_core::hash_file(&hashes_path).unwrap();
+        hashes.insert("hashes.json".to_string(), hashes_json_hash.clone());
+        JsonStorage::to_json(&hashes, &hashes_path).unwrap();
+
+        let package_info = PackageInfo::new(
+            name.to_string(),
+            "main".to_string(),
+            "1.0.0".to_string(),
+            "dependency".to_string(),
+            hashes_json_hash,
+            None,
+            None,
+        );
+        JsonStorage::to_json(&package_info, &src.join("packageInfo.json")).unwrap();
+
+        let zip_path = dir.join(format!("remote-{name}.dpm"));
+        crate::zip_folder(&src, &zip_path).unwrap();
+        let zip_hash = dpm_core::hash_file(&zip_path).unwrap();
+        (std::fs::read(&zip_path).unwrap(), zip_hash)
+    }
+
+    #[tokio::test]
+    async fn auto_resolves_a_missing_dependency_from_the_index() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        // The dependency lives in the configured index, same as a normal
+        // remote install would resolve it through.
+        let (dep_bytes, dep_hash) = build_remote_fixture_zip(root.path(), "libfoo");
+        let dep_url = serve_once(dep_bytes);
+        let dep_row = DbPackage::new(
+            "official",
+            "libfoo",
+            "1.0.0",
+            "prebuilt",
+            Some(dep_url),
+            Some(dep_hash),
+            Some("libfoo.dpm".to_string()),
+            None,
+            "dependency",
+            Some("main".to_string()),
+            None,
+            None,
+            None,
+            true,
+        );
+        ctx.info_db.insert_available(dep_row).await.unwrap();
+
+        let deps = vec![Dependency {
+            name: "libfoo".to_string(),
+            version: "^1.0.0".to_string(),
+        }];
+        let dpm_path = build_local_dpm_file(root.path(), "needs-libfoo", Some(deps));
+
+        let setting = Setting {
+            sources: vec![Source {
+                alias: "official".to_string(),
+                repo_url: "http://127.0.0.1:1".to_string(),
+                repo_info: "http://127.0.0.1:1".to_string(),
+            }],
+        };
+        let install = ActionInfo::new(
+            ctx.clone(),
+            vec![dpm_path.display().to_string()],
+            false,
+            setting,
+        );
+        install.install().await.unwrap();
+
+        let installed = ctx.db.read_all().await.unwrap();
+        assert_eq!(installed.len(), 2);
+        let needs = installed.iter().find(|p| p.name == "needs-libfoo").unwrap();
+        assert_eq!(needs.source, "local");
+        assert!(needs.explicit);
+        let dep = installed.iter().find(|p| p.name == "libfoo").unwrap();
+        assert_eq!(
+            dep.source, "official",
+            "the auto-resolved dependency must come from the index, not be marked local"
+        );
+        assert!(
+            !dep.explicit,
+            "an auto-resolved dependency must not be promoted to explicit"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_a_local_file_whose_hashes_json_self_entry_is_tampered() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+        let dpm_path = build_local_dpm_file(root.path(), "tampered", None);
+
+        // Corrupt the archive's internal self-consistency: rewrite
+        // hashes.json's "hashes.json" self-entry so it no longer matches
+        // packageInfo.json.hash, without touching packageInfo.json itself.
+        let extracted = root.path().join("extracted-for-tamper");
+        unzip_file(&dpm_path, &extracted).unwrap();
+        let mut hashes: HashMap<String, String> =
+            JsonStorage::from_json(&extracted.join("hashes.json")).unwrap();
+        hashes.insert("hashes.json".to_string(), "0".repeat(64));
+        JsonStorage::to_json(&hashes, &extracted.join("hashes.json")).unwrap();
+        crate::zip_folder(&extracted, &dpm_path).unwrap();
+
+        let action = ActionInfo::new(
+            ctx,
+            vec![dpm_path.display().to_string()],
+            false,
+            Setting::default(),
+        );
+        let err = action.install().await.unwrap_err();
+        assert!(matches!(
+            err,
+            ClientError::Core(CoreError::HashMismatch { .. })
+        ));
     }
 }
