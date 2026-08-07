@@ -70,8 +70,11 @@ pub enum Commands {
         #[arg(short, long)]
         verbose: bool,
         /// List packages managed by host OS package manager (Homebrew/Apt/Dnf)
-        #[arg(long = "sys-mgr", visible_aliases = ["os", "system-mgr"])]
+        #[arg(long = "sys-mgr", visible_aliases = ["os", "system-mgr"], conflicts_with = "outdated")]
         sys_mgr: bool,
+        /// List only DPM-managed packages that have a newer version available
+        #[arg(long)]
+        outdated: bool,
     },
     /// Upgrade Package
     #[command(visible_aliases = ["U", "UP", "grade"], arg_required_else_help = true)]
