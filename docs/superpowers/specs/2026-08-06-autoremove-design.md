@@ -85,6 +85,7 @@ Autoremove {
 ```
 
 `action.rs::autoremove()`:
+
 1. `self.ctx.db.read_all()` 拿全部已裝套件。
 2. `find_orphans(&installed)`。
 3. 空 → 印 `"No orphaned packages found."`。
@@ -103,6 +104,7 @@ Autoremove {
 ## 錯誤處理
 
 沿用現有 `ClientError`/`ClientResult` 模式,不新增 error variant:
+
 - `ALTER TABLE` 的「欄位已存在」錯誤字串比對失敗(判斷邏輯本身出錯,不是欄位真的已存在)→ 正常回傳 `ClientError::Core(DatabaseError(...))`,跟其他 DB 操作一致。
 - `autoremove`/`uninstall` 收尾的孤兒查詢失敗 → 沿用現有的 `?` 傳播,不特別吞掉(這兩處都不是「盡量做、失敗也不影響主流程」的場景——移除操作本身失敗必須讓使用者看到)。
 
