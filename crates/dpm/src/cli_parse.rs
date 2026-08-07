@@ -64,6 +64,14 @@ pub enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    /// Show a package's full metadata (version, dependencies, install state)
+    #[command(visible_aliases = ["show"], arg_required_else_help = true)]
+    Info {
+        #[arg(value_name = "Package name", required = true)]
+        pn: Vec<String>,
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// List installed packages
     #[command(visible_aliases = ["l", "li", "ll"])]
     List {

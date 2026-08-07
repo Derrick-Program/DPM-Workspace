@@ -86,6 +86,11 @@ pub async fn entry(ctx: Context, config: Cli) -> ClientResult<()> {
                 .search()
                 .await?
         }
+        Some(Commands::Info { pn, verbose }) => {
+            ActionInfo::new(ctx.clone(), pn, verbose, setting_config)
+                .info()
+                .await?
+        }
         Some(Commands::List {
             verbose,
             sys_mgr,

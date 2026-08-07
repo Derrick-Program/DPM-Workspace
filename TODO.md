@@ -63,7 +63,7 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 
 - [ ] **Downgrade / 版本回退** — 沒有使用者可下的指令。`placer.rs` 的 rollback 只是單次安裝失敗時的原子復原保護(裝到一半失敗換回舊的),不是「切回上一版」的功能。
 
-- [ ] **`info`/`show` 詳細資訊指令** — CLI 目前只有 Install/Update/Uninstall/Search/List/Upgrade/UpgradeSelf/Source/GenConfig,沒有單看一個套件完整 metadata(license/size/dependencies/changelog)的指令。
+- [x] **`info`/`show` 詳細資訊指令** — `dpm info <pkg>...`(別名 `show`),比照 `search`/`uninstall` 的 `Vec<String>` 多名稱慣例。印已裝狀態(版本/來源/explicit)+ description/entry/dependencies/author 簽章狀態 + 本地索引所有 `(source, version)`。`license`/`size`/`changelog` 這幾個欄位資料模型(`PackageVersionInfo`/`DbPackage`)根本沒有,不在範圍內,要做得先改 schema。實作在 `action.rs::info()`,一次讀完 `read_available()`/`read_all()` 在記憶體篩選(精確比對,不像 `search` 模糊比對)。
 
 - [ ] **本機離線檔案安裝**(類似 `dpkg -i local.deb`)— 沒有,一定要透過 source 索引才能裝,無法直接指定本機一個 zip/檔案安裝。
 
