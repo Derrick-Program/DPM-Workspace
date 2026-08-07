@@ -860,6 +860,91 @@ impl ActionInfo {
         Ok(())
     }
 
+    /// `dpm info <pkg>...`: prints one package's full known metadata — its
+    /// installed state (if any) plus every available `(source, version)` in
+    /// the local index. `self.pkgs` reused as the query list, same as
+    /// `search`/`uninstall`. Reads `read_available()`/`read_all()` once each
+    /// up front and filters in memory (exact name match, unlike `search`'s
+    /// substring match) rather than re-querying per name.
+    pub async fn info(&self) -> ClientResult<()> {
+        let available = self.ctx.info_db.read_available().await?;
+        let installed = self.ctx.db.read_all().await?;
+
+        for name in &self.pkgs {
+            let installed_pkg = installed.iter().find(|p| &p.name == name);
+            let mut matches: Vec<&DbPackage> =
+                available.iter().filter(|p| &p.name == name).collect();
+            matches.sort_by(|a, b| a.source.cmp(&b.source).then(a.version.cmp(&b.version)));
+
+            if matches.is_empty() && installed_pkg.is_none() {
+                println!(
+                    "{}",
+                    format!("{name}: not found in local DPM index").yellow()
+                );
+                continue;
+            }
+
+            println!("{}", format!("==> {name}").green().bold());
+            match installed_pkg {
+                Some(p) => println!(
+                    "  Installed: v{} ({}, {})",
+                    p.version,
+                    p.source,
+                    if p.explicit { "explicit" } else { "auto" }
+                ),
+                None => println!("  Installed: not installed"),
+            }
+
+            // Metadata (description/entry/dependencies/author) reflects the
+            // installed row if there is one, otherwise the first available
+            // match — versions can drift in these fields, but there's no
+            // single "canonical" version to prefer once nothing is
+            // installed, so first-available is the same order `matches` is
+            // displayed in below.
+            if let Some(meta) = installed_pkg.or_else(|| matches.first().copied()) {
+                if !meta.description.is_empty() {
+                    println!("  Description: {}", meta.description);
+                }
+                if let Some(entry) = &meta.entry {
+                    println!("  Entry: {entry}");
+                }
+                if let Some(deps) = &meta.dependencies {
+                    if !deps.is_empty() {
+                        let list = deps
+                            .iter()
+                            .map(|d| format!("{} {}", d.name, d.version))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        println!("  Dependencies: {list}");
+                    }
+                }
+                if let Some(author) = &meta.author {
+                    let signed = if meta.signature.is_some() {
+                        "signed"
+                    } else {
+                        "unsigned"
+                    };
+                    println!("  Author: {author} ({signed})");
+                }
+            }
+
+            if !matches.is_empty() {
+                println!("\n  {}", "Available versions:".bold());
+                for p in &matches {
+                    println!(
+                        "    {}/{}  v{}  ({})",
+                        p.source.cyan(),
+                        p.name,
+                        p.version,
+                        p.kind
+                    );
+                }
+            }
+            println!();
+        }
+        Ok(())
+    }
+
     pub async fn list(&self, sys: bool, outdated: bool) -> ClientResult<()> {
         if outdated {
             return self.list_outdated().await;
@@ -1984,6 +2069,65 @@ mod install_resolved_tests {
         // Empty query should list all available packages without error
         let action_empty = ActionInfo::new(ctx, vec![], false, setting);
         assert!(action_empty.search().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn info_covers_installed_available_only_and_not_found() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        let available_only = DbPackage::new(
+            "official",
+            "addsub",
+            "0.1.0",
+            "source",
+            None,
+            Some("b".repeat(64)),
+            None,
+            Some("cc -shared -o libaddsub.dylib src/addsub.c".to_string()),
+            "C add/subtract shared library",
+            None,
+            None,
+            None,
+            None,
+            true,
+        );
+        ctx.info_db.insert_available(available_only).await.unwrap();
+
+        let installed_and_available = DbPackage::new(
+            "official",
+            "hello",
+            "0.1.0",
+            "prebuilt",
+            Some("https://example.com/hello.zip".to_string()),
+            Some("a".repeat(64)),
+            Some("hello.zip".to_string()),
+            None,
+            "simple universal hello package",
+            Some("hello".to_string()),
+            None,
+            Some("someauthor".to_string()),
+            Some("deadbeef".to_string()),
+            true,
+        );
+        ctx.info_db
+            .insert_available(installed_and_available.clone())
+            .await
+            .unwrap();
+        ctx.db.insert(installed_and_available).await.unwrap();
+
+        let setting = Setting::default();
+        let action = ActionInfo::new(
+            ctx,
+            vec![
+                "hello".to_string(),          // installed + available
+                "addsub".to_string(),         // available only
+                "does-not-exist".to_string(), // neither
+            ],
+            false,
+            setting,
+        );
+        assert!(action.info().await.is_ok());
     }
 
     #[test]
