@@ -12,7 +12,7 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 - [x] **`system.rs::init()` 的 `repo_url`/`repo_info` 沒寫回 `config.json`** — 在 TOML layered config 重構中,`init_first_run` 已透過 `TomlStorage::to_toml(&default_setting, &config_path)` 將包含 `repo_url` 與 `repo_info` 的預設設定寫入 `config.toml`,並新增單元測試驗證持久化與 re-read 正常。
 - [x] **`PackageManager::Unknown` 與 unsupported OS 全部用 `panic!`** — `PackageManager::command_for` 與 `system_command_runner` 全數採用回傳 `ClientResult<()>` 錯誤變體 (`ClientError::SystemError`),移除任何潛在 `panic!`,並移除路徑處的 `.unwrap()`。
 
-- [ ] **`place_package` 的 entry-point symlink 建立不是 idempotent 的** — `crates/dpm/src/utils/placer.rs`。重裝一個已安裝的套件(或把一個已安裝套件升格成 explicit,會重跑同一條 install 路徑)在 `bin/<pkg-name>` entry convention 下會因為 symlink 已存在而報 "File exists" 失敗。autoremove 分支 Task 6 手動 E2E 驗證時發現,已確認跟該分支無關,故未在該分支修。
+- [x] **`place_package` 的 entry-point symlink 建立不是 idempotent 的** — 根因:`place_package` 裡 opt/subdir symlink 都走 `create_relative_or_abs_symlink`(先移除已存在的目標再建),唯獨 entry-point symlink 直接呼叫 `ln -s`(無 `-f`),重裝/升格 explicit 重跑同一條路徑時對已存在的 `bin/<pkg>` 報 "File exists"。修法:`crates/dpm/src/utils/placer.rs` 的 `ln` 呼叫改成 `-sf`,跟既有 idempotent symlink 模式一致。新增測試 `reinstalling_same_package_overwrites_existing_entry_symlink` 驗證。
 
 ## P2 — 安全 / 硬化
 
