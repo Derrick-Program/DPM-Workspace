@@ -61,7 +61,7 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 
 - [x] **Pin / hold 版本** — `dpm pin <pkg>...`(別名 `hold`)/`dpm unpin <pkg>...`(別名 `unhold`)。只擋 `upgrade()` 這條路徑(`dpm install pkg@version` 不擋,那是使用者主動指名版本,語意不同)。`InstalledPackages` 加 `pinned INTEGER NOT NULL DEFAULT 0` 欄位,寫法照抄當初加 `explicit` 欄位的 pattern(`CREATE TABLE IF NOT EXISTS` 含新欄位 + idempotent `ALTER TABLE ADD COLUMN`)。刻意**不**把 `pinned` 塞進共用的 `DbPackage`/`DbPackage::new`(牽動 20 處呼叫點,且只對 `InstalledPackages` 有意義),改用獨立的 `Db::set_pinned`/`Db::pinned_names`。`upgrade()` 呼叫 `install_resolved` 前用 `pinned_names()` 把 pinned 套件從 `is` 濾掉,印提示但不中斷其他套件的升級。`list`/`info` 順便標註 `(pinned)`。
 
-- [ ] **Downgrade / 版本回退** — 沒有使用者可下的指令。`placer.rs` 的 rollback 只是單次安裝失敗時的原子復原保護(裝到一半失敗換回舊的),不是「切回上一版」的功能。
+- [x] **Downgrade / 版本回退** — 追過整條路徑(`resolve_install_set`/`swap_into_install_dir`/`Db::insert`)後發現 `dpm install pkg@<舊版本>` 其實**已經**能 downgrade:pubgrub 解析不管目前裝了什麼版本,換裝跟 DB UPSERT 都是無條件覆蓋,沒有任何「不准裝比目前舊」的檢查。原本完全沒測試覆蓋這件事(也沒有任何測試做過完整 happy-path `install()` round trip)。補了 `install_pkg_at_older_version_downgrades_the_already_installed_one`(`action.rs`)鎖住這個行為,順便是第一個完整 install round-trip 測試。不新增 `dpm downgrade` 指令——決定只驗證+補測試,不做別名指令。
 
 - [x] **`info`/`show` 詳細資訊指令** — `dpm info <pkg>...`(別名 `show`),比照 `search`/`uninstall` 的 `Vec<String>` 多名稱慣例。印已裝狀態(版本/來源/explicit)+ description/entry/dependencies/author 簽章狀態 + 本地索引所有 `(source, version)`。`license`/`size`/`changelog` 這幾個欄位資料模型(`PackageVersionInfo`/`DbPackage`)根本沒有,不在範圍內,要做得先改 schema。實作在 `action.rs::info()`,一次讀完 `read_available()`/`read_all()` 在記憶體篩選(精確比對,不像 `search` 模糊比對)。
 
