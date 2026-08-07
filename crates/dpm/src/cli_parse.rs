@@ -98,6 +98,22 @@ pub enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    /// Pin an installed package so `dpm upgrade` skips it
+    #[command(visible_aliases = ["hold"], arg_required_else_help = true)]
+    Pin {
+        #[arg(value_name = "Package name", required = true)]
+        pn: Vec<String>,
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Unpin a previously pinned package
+    #[command(visible_aliases = ["unhold"], arg_required_else_help = true)]
+    Unpin {
+        #[arg(value_name = "Package name", required = true)]
+        pn: Vec<String>,
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Remove orphaned dependencies (installed automatically, no longer needed)
     #[command(visible_aliases = ["ar", "auto"])]
     Autoremove {

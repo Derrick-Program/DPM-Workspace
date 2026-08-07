@@ -292,6 +292,30 @@ mod db_tests {
     }
 
     #[tokio::test]
+    async fn test_set_pinned_toggles_and_reports_whether_a_row_was_updated() -> TestResult {
+        let dir = tempdir()?;
+        let db = setup_db(dir.path(), false).await?;
+        db.insert(sample_pkg("official", "0.1.0")).await?;
+        let mut other = sample_pkg("official", "0.1.0");
+        other.name = "other_pkg".to_string();
+        db.insert(other).await?;
+
+        assert!(db.set_pinned("test_pkg", true).await?);
+        assert_eq!(db.pinned_names().await?, ["test_pkg".to_string()].into());
+
+        // Idempotent: pinning an already-pinned row still updates a row and
+        // returns true.
+        assert!(db.set_pinned("test_pkg", true).await?);
+
+        assert!(db.set_pinned("test_pkg", false).await?);
+        assert!(db.pinned_names().await?.is_empty());
+
+        // Not installed: no row to update.
+        assert!(!db.set_pinned("does-not-exist", true).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_delete_installed_removes_only_the_named_package() -> TestResult {
         let dir = tempdir()?;
         let db = setup_db(dir.path(), false).await?;
