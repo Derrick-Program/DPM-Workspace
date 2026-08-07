@@ -187,7 +187,7 @@ pub fn place_package(
     system_controller.system_command_runner(
         "ln",
         vec![
-            "-s",
+            "-sf",
             main_file.display().to_string().as_str(),
             ln_path.display().to_string().as_str(),
         ],
@@ -234,6 +234,55 @@ mod tests {
         let link = bin_dir.join("pkg");
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
         assert_eq!(fs::read_link(&link).unwrap(), installed_main);
+    }
+
+    #[test]
+    fn reinstalling_same_package_overwrites_existing_entry_symlink() {
+        // Reproduces the bug: `place_package` run twice for the same pkg (a
+        // reinstall, or promoting an already-installed dependency to
+        // explicit — both re-run the same install path) must not fail just
+        // because bin_dir/<pkg> already exists from the first run.
+        let root = tempdir().unwrap();
+        let content_dir = root.path().join("content");
+        fs::create_dir_all(&content_dir).unwrap();
+        fs::write(content_dir.join("main"), b"#!/bin/sh\necho hi\n").unwrap();
+        let install_dir = root.path().join("install");
+        let bin_dir = root.path().join("bin");
+        fs::create_dir_all(&install_dir).unwrap();
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let controller = SystemController::new(Scope::PerUser);
+        place_package(
+            "pkg",
+            &content_dir,
+            Some("main"),
+            &install_dir,
+            &bin_dir,
+            root.path(),
+            &controller,
+        )
+        .unwrap();
+
+        // Second install: swap_into_install_dir moves content_dir away, so
+        // a fresh staging dir with the same content is needed to simulate a
+        // real reinstall.
+        let content_dir_2 = root.path().join("content2");
+        fs::create_dir_all(&content_dir_2).unwrap();
+        fs::write(content_dir_2.join("main"), b"#!/bin/sh\necho hi\n").unwrap();
+
+        place_package(
+            "pkg",
+            &content_dir_2,
+            Some("main"),
+            &install_dir,
+            &bin_dir,
+            root.path(),
+            &controller,
+        )
+        .expect("reinstalling the same package must not fail on an existing entry symlink");
+
+        let link = bin_dir.join("pkg");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
     }
 
     #[test]
