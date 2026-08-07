@@ -19,6 +19,6 @@ Cargo.lock
 /target
 .DS_Store
 
-# The Repo/ directory contains published package archives (.zip) that are
+# The Repo/ directory contains published package archives (.dpm) that are
 # served via raw.githubusercontent.com — these MUST be committed so that
 # `dpm install` can fetch them over HTTPS from this mono-repo.

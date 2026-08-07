@@ -393,6 +393,29 @@ impl Db {
         Ok(rows > 0)
     }
 
+    /// Forces `explicit` on a single `InstalledPackages` row by name.
+    /// `install_resolved_with_gate`'s own explicit/promote logic only ever
+    /// produces `explicit = true` for a name that appears in its `is` list
+    /// (there's no way to ask it for "install this, but as auto" — `is`
+    /// means "directly requested"). `install_local_file` needs exactly
+    /// that: a local archive's dependencies are resolved through the same
+    /// `is`-based pipeline (so they get downloaded/verified/placed
+    /// correctly), but they were never named by the user, so they must
+    /// still end up non-explicit for `dpm autoremove` to see them as
+    /// orphan-eligible. Called right after such a fresh install, when the
+    /// row is known to have just been inserted with `explicit = true`.
+    pub async fn set_explicit(&self, name: &str, explicit: bool) -> ClientResult<bool> {
+        let conn = self.connect().await?;
+        let rows = conn
+            .execute(
+                "UPDATE InstalledPackages SET explicit = ?1 WHERE name = ?2",
+                (explicit, name),
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        Ok(rows > 0)
+    }
+
     /// Names of every installed package currently pinned — `upgrade()` uses
     /// this to skip pinned packages, `list()`/`info()` use it to tag them.
     pub async fn pinned_names(&self) -> ClientResult<std::collections::HashSet<String>> {
