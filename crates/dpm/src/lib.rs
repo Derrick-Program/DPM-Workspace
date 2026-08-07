@@ -109,6 +109,16 @@ pub async fn entry(ctx: Context, config: Cli) -> ClientResult<()> {
                 .upgrade_self()
                 .await?
         }
+        Some(Commands::Pin { pn, verbose }) => {
+            ActionInfo::new(ctx.clone(), pn, verbose, setting_config)
+                .pin(true)
+                .await?
+        }
+        Some(Commands::Unpin { pn, verbose }) => {
+            ActionInfo::new(ctx.clone(), pn, verbose, setting_config)
+                .pin(false)
+                .await?
+        }
         Some(Commands::Autoremove { verbose }) => {
             ActionInfo::new(ctx.clone(), vec![], verbose, setting_config)
                 .autoremove()

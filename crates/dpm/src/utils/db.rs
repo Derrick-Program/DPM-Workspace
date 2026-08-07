@@ -89,6 +89,7 @@ impl Db {
                     author TEXT,
                     signature TEXT,
                     explicit INTEGER NOT NULL DEFAULT 1,
+                    pinned INTEGER NOT NULL DEFAULT 0,
                     installed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (name)
                 );"#,
@@ -98,13 +99,26 @@ impl Db {
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
             // `CREATE TABLE IF NOT EXISTS` above is a no-op on a DB file that
             // already has `InstalledPackages` from before this column
-            // existed, so it wouldn't add `explicit` to it. This `ALTER
-            // TABLE` covers that upgrade path; on a brand-new DB (or one
-            // already migrated) the column already exists, so SQLite/turso
-            // reports "duplicate column name", which we treat as success.
+            // existed, so it wouldn't add `explicit`/`pinned` to it. These
+            // `ALTER TABLE`s cover that upgrade path; on a brand-new DB (or
+            // one already migrated) the column already exists, so
+            // SQLite/turso reports "duplicate column name", which we treat
+            // as success.
             if let Err(e) = conn
                 .execute(
                     "ALTER TABLE InstalledPackages ADD COLUMN explicit INTEGER NOT NULL DEFAULT 1",
+                    (),
+                )
+                .await
+            {
+                let msg = e.to_string();
+                if !msg.to_lowercase().contains("duplicate column") {
+                    return Err(ClientError::Core(DatabaseError(msg)));
+                }
+            }
+            if let Err(e) = conn
+                .execute(
+                    "ALTER TABLE InstalledPackages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
                     (),
                 )
                 .await
@@ -360,6 +374,50 @@ impl Db {
         .await
         .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
         Ok(())
+    }
+
+    /// Flips `pinned` on a single `InstalledPackages` row by name — used by
+    /// `dpm pin`/`dpm unpin`. Returns whether a row was actually updated, so
+    /// the caller can tell "not installed" from "already in that state"
+    /// (this is idempotent: pinning an already-pinned package still updates
+    /// and returns `true`).
+    pub async fn set_pinned(&self, name: &str, pinned: bool) -> ClientResult<bool> {
+        let conn = self.connect().await?;
+        let rows = conn
+            .execute(
+                "UPDATE InstalledPackages SET pinned = ?1 WHERE name = ?2",
+                (pinned, name),
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        Ok(rows > 0)
+    }
+
+    /// Names of every installed package currently pinned — `upgrade()` uses
+    /// this to skip pinned packages, `list()`/`info()` use it to tag them.
+    pub async fn pinned_names(&self) -> ClientResult<std::collections::HashSet<String>> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query("SELECT name FROM InstalledPackages WHERE pinned = 1", ())
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+        let mut names = std::collections::HashSet::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+        {
+            let name = row
+                .get_value(0)
+                .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+                .as_text()
+                .cloned()
+                .ok_or_else(|| {
+                    ClientError::Core(DatabaseError("name column is not text".to_string()))
+                })?;
+            names.insert(name);
+        }
+        Ok(names)
     }
 
     /// Parameterized delete for a single `InstalledPackages` row by name —

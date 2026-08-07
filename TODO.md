@@ -59,7 +59,7 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 
 - [x] **`list --outdated`** — `List` 指令加 `--outdated` flag(跟 `--sys-mgr` 互斥,只查 dpm 自己管的套件)。比對邏輯在 `crates/dpm/src/utils/outdated.rs::find_outdated`:對每個已裝套件,只在它安裝當下的那個 source 內找同名套件的最高 semver 版本(不跨 source 比,避免跟 `resolve_install_set` 一樣要處理 ambiguous source),版本字串解析失敗的項目跳過不影響其他結果。讀的是本地 `AvailablePackages` 快取(`dpm update` 抓下來的那份),不會現查網路,跟 `search` 同慣例。
 
-- [ ] **Pin / hold 版本** — `dpm update`/`upgrade` 沒辦法鎖某個套件不被升級。
+- [x] **Pin / hold 版本** — `dpm pin <pkg>...`(別名 `hold`)/`dpm unpin <pkg>...`(別名 `unhold`)。只擋 `upgrade()` 這條路徑(`dpm install pkg@version` 不擋,那是使用者主動指名版本,語意不同)。`InstalledPackages` 加 `pinned INTEGER NOT NULL DEFAULT 0` 欄位,寫法照抄當初加 `explicit` 欄位的 pattern(`CREATE TABLE IF NOT EXISTS` 含新欄位 + idempotent `ALTER TABLE ADD COLUMN`)。刻意**不**把 `pinned` 塞進共用的 `DbPackage`/`DbPackage::new`(牽動 20 處呼叫點,且只對 `InstalledPackages` 有意義),改用獨立的 `Db::set_pinned`/`Db::pinned_names`。`upgrade()` 呼叫 `install_resolved` 前用 `pinned_names()` 把 pinned 套件從 `is` 濾掉,印提示但不中斷其他套件的升級。`list`/`info` 順便標註 `(pinned)`。
 
 - [ ] **Downgrade / 版本回退** — 沒有使用者可下的指令。`placer.rs` 的 rollback 只是單次安裝失敗時的原子復原保護(裝到一半失敗換回舊的),不是「切回上一版」的功能。
 

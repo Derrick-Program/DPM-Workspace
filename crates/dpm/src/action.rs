@@ -869,6 +869,7 @@ impl ActionInfo {
     pub async fn info(&self) -> ClientResult<()> {
         let available = self.ctx.info_db.read_available().await?;
         let installed = self.ctx.db.read_all().await?;
+        let pinned = self.ctx.db.pinned_names().await?;
 
         for name in &self.pkgs {
             let installed_pkg = installed.iter().find(|p| &p.name == name);
@@ -886,12 +887,20 @@ impl ActionInfo {
 
             println!("{}", format!("==> {name}").green().bold());
             match installed_pkg {
-                Some(p) => println!(
-                    "  Installed: v{} ({}, {})",
-                    p.version,
-                    p.source,
-                    if p.explicit { "explicit" } else { "auto" }
-                ),
+                Some(p) => {
+                    let pin_tag = if pinned.contains(name) {
+                        " (pinned)"
+                    } else {
+                        ""
+                    };
+                    println!(
+                        "  Installed: v{} ({}, {}){}",
+                        p.version,
+                        p.source,
+                        if p.explicit { "explicit" } else { "auto" },
+                        pin_tag.yellow()
+                    )
+                }
                 None => println!("  Installed: not installed"),
             }
 
@@ -958,9 +967,14 @@ impl ActionInfo {
             if pkgs.is_empty() {
                 println!("{}", "No DPM packages currently installed.".yellow());
             } else {
+                let pinned = self.ctx.db.pinned_names().await?;
                 println!("{}", "==> DPM Installed Packages:".green().bold());
                 for pkg in pkgs {
-                    println!("  {}", pkg.green());
+                    if pinned.contains(&pkg) {
+                        println!("  {} {}", pkg.green(), "(pinned)".yellow());
+                    } else {
+                        println!("  {}", pkg.green());
+                    }
                 }
             }
         }
@@ -998,10 +1012,50 @@ impl ActionInfo {
             println!("{}", "No packages available for upgrade.".yellow());
             return Ok(());
         }
+        // `dpm pin` lets a package opt out of `upgrade` without erroring the
+        // whole command — every other requested package still upgrades, the
+        // pinned ones are just skipped with a hint on how to lift it.
+        let pinned = self.ctx.db.pinned_names().await?;
+        let is: Vec<_> = is
+            .into_iter()
+            .filter(|(_, name, _)| {
+                if pinned.contains(name) {
+                    println!(
+                        "{}",
+                        format!("{name} is pinned, skipping (unpin with `dpm unpin {name}`)")
+                            .yellow()
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
         self.install_resolved(&all_packages, &is, false).await?;
         if !isnot.is_empty() {
             for pkg in isnot {
                 self.system_action.upgrade_package(&pkg)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `dpm pin`/`dpm unpin`: flips `InstalledPackages.pinned` for every
+    /// name in `self.pkgs`. `pin = true` pins, `false` unpins — same shape
+    /// as the two CLI subcommands sharing one implementation instead of two
+    /// near-identical copies. Names that aren't currently installed are
+    /// reported and skipped rather than erroring the whole command, same
+    /// tolerance `autoremove`'s per-package loop uses.
+    pub async fn pin(&self, pin: bool) -> ClientResult<()> {
+        let verb = if pin { "pin" } else { "unpin" };
+        for name in &self.pkgs {
+            if self.ctx.db.set_pinned(name, pin).await? {
+                println!("{}", format!("{name}: {verb}ned").green());
+            } else {
+                println!(
+                    "{}",
+                    format!("{name}: not installed, nothing to {verb}").yellow()
+                );
             }
         }
         Ok(())
@@ -2069,6 +2123,70 @@ mod install_resolved_tests {
         // Empty query should list all available packages without error
         let action_empty = ActionInfo::new(ctx, vec![], false, setting);
         assert!(action_empty.search().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn pin_and_unpin_report_installed_vs_missing_packages() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        let pkg = DbPackage::new(
+            "official", "hello", "0.1.0", "prebuilt", None, None, None, None, "", None, None, None,
+            None, true,
+        );
+        ctx.db.insert(pkg).await.unwrap();
+
+        let setting = Setting::default();
+        let action = ActionInfo::new(
+            ctx.clone(),
+            vec!["hello".to_string(), "does-not-exist".to_string()],
+            false,
+            setting.clone(),
+        );
+        assert!(action.pin(true).await.is_ok());
+        assert!(ctx.db.pinned_names().await.unwrap().contains("hello"));
+
+        let action = ActionInfo::new(ctx.clone(), vec!["hello".to_string()], false, setting);
+        assert!(action.pin(false).await.is_ok());
+        assert!(ctx.db.pinned_names().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn upgrade_skips_a_pinned_package_without_erroring() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+
+        let installed = DbPackage::new(
+            "official", "hello", "0.1.0", "prebuilt", None, None, None, None, "", None, None, None,
+            None, true,
+        );
+        ctx.db.insert(installed).await.unwrap();
+        ctx.db.set_pinned("hello", true).await.unwrap();
+
+        let available = DbPackage::new(
+            "official",
+            "hello",
+            "0.2.0",
+            "prebuilt",
+            Some("https://example.com/hello.zip".to_string()),
+            Some("a".repeat(64)),
+            Some("hello.zip".to_string()),
+            None,
+            "",
+            None,
+            None,
+            None,
+            None,
+            true,
+        );
+        ctx.info_db.insert_available(available).await.unwrap();
+
+        let setting = Setting::default();
+        let action = ActionInfo::new(ctx, vec!["hello".to_string()], false, setting);
+        // If the pinned filter didn't remove "hello" from `is`, this would
+        // try to actually download/verify hello.zip and fail/hang instead
+        // of returning Ok quickly.
+        assert!(action.upgrade().await.is_ok());
     }
 
     #[tokio::test]
