@@ -1138,6 +1138,34 @@ impl ActionInfo {
         Ok(())
     }
 
+    /// Reverse-lookup: for each path in `self.pkgs` (here holding file
+    /// paths, not package names — same field, different CLI-level meaning,
+    /// see `Commands::Owns`), print which installed package(s) registered
+    /// it as a tracked symlink in `installed_files`. Only matches DPM-built
+    /// symlinks (`opt/`, `bin/`, `sbin/`, `lib/`, `share/<pkg>/`, ...) —
+    /// raw files inside a package's private `Software/<pkg>/` install
+    /// directory are never individually tracked, so they never match here.
+    pub async fn owns(&self) -> ClientResult<()> {
+        for raw_path in &self.pkgs {
+            let absolute = std::path::absolute(raw_path)
+                .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+            let owners = self
+                .ctx
+                .db
+                .find_owners(&absolute.display().to_string())
+                .await?;
+            if owners.is_empty() {
+                println!(
+                    "{}",
+                    format!("{raw_path}: not owned by any installed package").yellow()
+                );
+            } else {
+                println!("{}: {}", raw_path, owners.join(", ").bold());
+            }
+        }
+        Ok(())
+    }
+
     pub async fn list(&self, sys: bool, outdated: bool) -> ClientResult<()> {
         if outdated {
             return self.list_outdated().await;
@@ -2380,6 +2408,81 @@ mod install_resolved_tests {
             "v1 content\n",
             "the on-disk content must actually be swapped back to the older version"
         );
+    }
+
+    #[tokio::test]
+    async fn owns_finds_the_package_that_registered_a_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let ctx = Context::for_test(root.path()).await.unwrap();
+        let setting = Setting {
+            sources: vec![Source {
+                alias: "official".to_string(),
+                repo_url: "http://127.0.0.1:1".to_string(),
+                repo_info: "http://127.0.0.1:1".to_string(),
+            }],
+        };
+
+        let fixtures_dir = tempfile::tempdir().unwrap();
+        let (zip_bytes, zip_hash) =
+            build_fixture_zip(fixtures_dir.path(), "1.0.0", "owns test content\n");
+        let url = serve_once(zip_bytes);
+
+        let row = DbPackage::new(
+            "official",
+            "downgrade-pkg",
+            "1.0.0",
+            "prebuilt",
+            Some(url),
+            Some(zip_hash),
+            Some("pkg-1.0.0.zip".to_string()),
+            None,
+            "test fixture",
+            Some("main".to_string()),
+            None,
+            None,
+            None,
+            true,
+        );
+        ctx.info_db.insert_available(row).await.unwrap();
+
+        let install = ActionInfo::new(
+            ctx.clone(),
+            vec!["downgrade-pkg@1.0.0".to_string()],
+            false,
+            setting.clone(),
+        );
+        install.install().await.unwrap();
+
+        let entry_link = ctx.bin_dir.join("downgrade-pkg");
+        let owners = ctx
+            .db
+            .find_owners(&entry_link.display().to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            owners,
+            vec!["downgrade-pkg".to_string()],
+            "install() must have recorded the entry-point symlink in installed_files"
+        );
+
+        // owns() 本身目前只印到 stdout,不回傳結構化結果——這裡直接驗證它
+        // 對已知會命中/不會命中的路徑都能跑完不報錯(印什麼由人工驗證,
+        // 見任務 3 的手動驗證步驟)。
+        let owns_hit = ActionInfo::new(
+            ctx.clone(),
+            vec![entry_link.display().to_string()],
+            false,
+            setting.clone(),
+        );
+        owns_hit.owns().await.unwrap();
+
+        let owns_miss = ActionInfo::new(
+            ctx.clone(),
+            vec!["/definitely/does/not/exist".to_string()],
+            false,
+            setting,
+        );
+        owns_miss.owns().await.unwrap();
     }
 
     #[tokio::test]
