@@ -1147,8 +1147,10 @@ impl ActionInfo {
     /// directory are never individually tracked, so they never match here.
     pub async fn owns(&self) -> ClientResult<()> {
         for raw_path in &self.pkgs {
-            let absolute = std::path::absolute(raw_path)
-                .map_err(|e| ClientError::Core(CoreError::IoError(e)))?;
+            let absolute = normalize_lexically(
+                &std::path::absolute(raw_path)
+                    .map_err(|e| ClientError::Core(CoreError::IoError(e)))?,
+            );
             let owners = self
                 .ctx
                 .db
@@ -1323,6 +1325,69 @@ impl ActionInfo {
             Err(e) => return Err(ClientError::SystemError(e.to_string())),
         }
         Ok(())
+    }
+}
+
+/// Lexically folds `.`/`..` components out of `path` — pure component
+/// manipulation, no filesystem access. `std::path::absolute()` (used just
+/// before this in `owns()`) prepends cwd but deliberately does NOT resolve
+/// `..` (correct for real filesystem paths, where a preceding component
+/// could be a symlink) or drop a trailing slash. Neither of those matters
+/// here: this produces a plain string key compared against
+/// `installed_files.file_path`, which is always stored as a clean absolute
+/// path with no `.`/`..`/trailing slash — so folding lexically (not
+/// resolving symlinks) is exactly what's needed to make tab-completed and
+/// `..`-relative inputs match it.
+fn normalize_lexically(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut result = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {}
+            other => result.push(other),
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod normalize_lexically_tests {
+    use super::normalize_lexically;
+    use std::path::Path;
+
+    #[test]
+    fn strips_a_trailing_slash() {
+        assert_eq!(
+            normalize_lexically(Path::new("/opt/dpm/opt/hello/")),
+            Path::new("/opt/dpm/opt/hello")
+        );
+    }
+
+    #[test]
+    fn folds_parent_dir_components() {
+        assert_eq!(
+            normalize_lexically(Path::new("/opt/dpm/bin/../opt/hello")),
+            Path::new("/opt/dpm/opt/hello")
+        );
+    }
+
+    #[test]
+    fn leaves_a_plain_path_unchanged() {
+        assert_eq!(
+            normalize_lexically(Path::new("/opt/dpm/bin/hello")),
+            Path::new("/opt/dpm/bin/hello")
+        );
+    }
+
+    #[test]
+    fn drops_current_dir_components() {
+        assert_eq!(
+            normalize_lexically(Path::new("/opt/dpm/./bin/hello")),
+            Path::new("/opt/dpm/bin/hello")
+        );
     }
 }
 
@@ -2463,6 +2528,26 @@ mod install_resolved_tests {
             owners,
             vec!["downgrade-pkg".to_string()],
             "install() must have recorded the entry-point symlink in installed_files"
+        );
+
+        // Shell tab-completion of a symlink-to-directory commonly appends a
+        // trailing `/` — `normalize_lexically` (applied after
+        // `std::path::absolute()` in `owns()`) must strip it so the lookup
+        // still matches the clean path stored in `installed_files`.
+        let entry_link_with_trailing_slash = format!("{}/", entry_link.display());
+        let owners_with_trailing_slash = ctx
+            .db
+            .find_owners(
+                &normalize_lexically(std::path::Path::new(&entry_link_with_trailing_slash))
+                    .display()
+                    .to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            owners_with_trailing_slash,
+            vec!["downgrade-pkg".to_string()],
+            "a trailing slash (as shells add on tab-completing a symlinked dir) must still match"
         );
 
         // owns() 本身目前只印到 stdout,不回傳結構化結果——這裡直接驗證它
