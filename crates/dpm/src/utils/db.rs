@@ -685,4 +685,34 @@ impl Db {
             .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
         Ok(())
     }
+
+    /// Reverse-lookup: which package(s) registered `file_path` in their
+    /// `installed_files` manifest. Returns every match, not just the first
+    /// — `installed_files`' PRIMARY KEY is `(package_name, file_path)`, so
+    /// two packages can legitimately register the same `file_path` (e.g.
+    /// two packages both linking a same-named file into `bin/`, which has
+    /// no per-package namespacing the way `share/`/`docs/`/`etc/`/`var/`
+    /// do — see `placer.rs::link_subdirs_to_env`'s `is_namespaced` split).
+    pub async fn find_owners(&self, file_path: &str) -> ClientResult<Vec<String>> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                "SELECT package_name FROM installed_files WHERE file_path = ?1",
+                [file_path],
+            )
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?;
+
+        let mut owners = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| ClientError::Core(DatabaseError(e.to_string())))?
+        {
+            if let Some(name) = row.get_value(0).ok().and_then(|v| v.as_text().cloned()) {
+                owners.push(name);
+            }
+        }
+        Ok(owners)
+    }
 }
