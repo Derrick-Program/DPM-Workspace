@@ -79,7 +79,7 @@ DPM-Workspace 全 workspace 掃描結果(2026-07-24)。之後修 bug / 加功能
 
 - [ ] **交易紀錄 / rollback** — 沒有 `dnf history undo` 這種東西,升級/移除沒有留 log,想復原只能手動 `dpm install pkg@舊版本`(前提索引還查得到那個版本)。需要新增一張交易紀錄表。
 
-- [ ] **檔案反查套件** — 沒有「這個檔案屬於哪個套件」(對應 `dpkg -S`/`pacman -Qo`)。`installed_files` 表其實已經記錄每個檔案屬於哪個套件,只是沒開放使用者指令查——這個成本相對低,是這輪裡最容易做的。
+- [x] **檔案反查套件** — `dpm owns <path>...`(別名 `of`)。反查範圍限定 `installed_files` 表裡的 DPM symlink(opt/bin/sbin/lib/share/<pkg> 等環境目錄連結),不含套件私有安裝目錄裡的原始檔案。`db.rs::find_owners` 回傳 `Vec<String>`(不是單一結果)因為同一個 file_path 理論上可以被兩個套件登記。設計見 `docs/superpowers/specs/2026-08-08-file-owner-lookup-design.md`。
 
 - [ ] **已裝完整性驗證** — 沒有 `rpm -V`/`dpkg --verify` 那種「裝好之後有沒有被動過手腳」的事後檢查,可以用既有的 `installed_files` + 原本裝的時候記錄的雜湊比對。
 

@@ -72,6 +72,16 @@ pub enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    /// Show which installed package owns a file (matches DPM-built
+    /// symlinks only — opt/bin/sbin/lib/share/<pkg> links, not raw files
+    /// inside a package's private install directory)
+    #[command(visible_aliases = ["of"], arg_required_else_help = true)]
+    Owns {
+        #[arg(value_name = "File path", required = true)]
+        pn: Vec<String>,
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// List installed packages
     #[command(visible_aliases = ["l", "li", "ll"])]
     List {

@@ -361,14 +361,14 @@ mod db_tests {
 
         db.record_installed_files(
             "hello",
-            &["/opt/dpm/bin/hello".to_string(), "/opt/dpm/opt/hello".to_string()],
+            &[
+                "/opt/dpm/bin/hello".to_string(),
+                "/opt/dpm/opt/hello".to_string(),
+            ],
         )
         .await?;
-        db.record_installed_files(
-            "world",
-            &["/opt/dpm/bin/world".to_string()],
-        )
-        .await?;
+        db.record_installed_files("world", &["/opt/dpm/bin/world".to_string()])
+            .await?;
 
         let owners = db.find_owners("/opt/dpm/bin/hello").await?;
         assert_eq!(owners, vec!["hello".to_string()]);
@@ -390,8 +390,10 @@ mod db_tests {
         // 兩個套件登記同一個 file_path(namespace share 情境,例如 bin/
         // 底下沒有 is_namespaced 保護,兩個套件都連了同名檔案)。
         let shared = "/opt/dpm/bin/shared-name".to_string();
-        db.record_installed_files("pkg-a", &[shared.clone()]).await?;
-        db.record_installed_files("pkg-b", &[shared.clone()]).await?;
+        db.record_installed_files("pkg-a", std::slice::from_ref(&shared))
+            .await?;
+        db.record_installed_files("pkg-b", std::slice::from_ref(&shared))
+            .await?;
 
         let mut owners = db.find_owners(&shared).await?;
         owners.sort();
